@@ -1499,15 +1499,36 @@ SHEET_URL = (
 
 
 def find_handle(driver: webdriver.Chrome, *, want_chatgpt: bool = False, want_sheets: bool = False):
-    """Return the window handle for ChatGPT or Sheets (if found)."""
-    for h in driver.window_handles:
-        driver.switch_to.window(h)
-        url = (driver.current_url or "").lower()
-        title = (driver.title or "").lower()
-        if want_chatgpt and ("chatgpt" in title or "openai.com" in url or "chatgpt.com" in url):
-            return h
-        if want_sheets and ("docs.google.com" in url and "/spreadsheets/" in url):
-            return h
+    """Return the window handle for ChatGPT or Sheets (if found).
+    Robust to transient tabs with no execution context.
+    """
+    try:
+        orig = driver.current_window_handle
+    except Exception:
+        orig = None
+    for h in list(driver.window_handles):
+        try:
+            driver.switch_to.window(h)
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+            try:
+                url = (driver.current_url or "").lower()
+            except Exception:
+                url = ""
+            if want_chatgpt and ("chatgpt.com" in url or "openai.com" in url):
+                return h
+            if want_sheets and ("docs.google.com" in url and "/spreadsheets/" in url):
+                return h
+        except Exception:
+            continue
+    # Restore previous focus
+    if orig and orig in driver.window_handles:
+        try:
+            driver.switch_to.window(orig)
+        except Exception:
+            pass
     return None
 
 
@@ -1968,11 +1989,14 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
         driver.switch_to.window(sheet_handle)
         try:
             z_vals = get_col_values(driver, "Z")
+            print(f"[scan] Z has {len(z_vals)} values")
         except Exception as e:
             print(f"[scan] failed: {e}")
             time.sleep(0.6)
             continue
         new_sites = [v for v in z_vals if v and v not in processed]
+        if new_sites:
+            print(f"[scan] new sites: {new_sites[:5]}{'...' if len(new_sites)>5 else ''}")
         if not new_sites:
             time.sleep(0.6)  # Step 4: no entries → loop
             continue
@@ -1987,6 +2011,7 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 # --- Open the website in its own tab ---
                 driver.switch_to.window(sheet_handle)
                 existing_handles = set(driver.window_handles)
+                print(f"[nav] opening site: {site}")
                 driver.execute_script("window.open(arguments[0], '_blank');", site)
                 time.sleep(0.8)
                 new_handles = [h for h in driver.window_handles if h not in existing_handles]
@@ -1995,6 +2020,11 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 # Allow initial load
                 time.sleep(2.0)
                 # --- Screenshot + ask GPT where to click ---
+                # Guard: ensure we are on the site tab before capturing the screenshot
+                try:
+                    driver.switch_to.window(site_handle)
+                except Exception:
+                    pass
                 tmp_img1 = save_temp_fullpage_jpeg_screenshot(driver, target_width=1400, jpeg_quality=50)
                 try:
                     prompt1 = (
@@ -2098,6 +2128,11 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 # --- Screenshot staff page + ask GPT for CSV (Phone, First, Last, Doctors) ---
                 time.sleep(1.0)
                 debug_where(driver, label="before-second-screenshot (site)")
+                # Guard: ensure we are on the site tab before capturing the screenshot
+                try:
+                    driver.switch_to.window(site_handle)
+                except Exception:
+                    pass
                 tmp_img2 = save_temp_fullpage_jpeg_screenshot(driver, target_width=1400, jpeg_quality=50)
                 try:
                     # Start a new chat for the combined prompt
@@ -2105,7 +2140,7 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                     prompt2 = (
                         "You are seeing the clinic's staff/providers page. Using ONLY what is visible in this screenshot, "
                         "return exactly ONE line in strict CSV format: Phone, First, Last, Doctors\n"
-                        "- Phone: the clinic's phone number if visible; else leave empty.\n"
+                        "- Phone: the clinic's phone number if visible (generally in the very top information bar); else leave empty.\n"
                         "- First, Last: the clinic OWNER's first and last names if visible; else use the first doctor's name.\n"
                         "- Doctors: the NUMBER of DOCTORS listed on this page (exclude non-physician staff). This field must be a numeric count with no words.\n"
                         "Return only the CSV line, with no labels or extra words."
