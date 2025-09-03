@@ -1,3 +1,18 @@
+"""
+This module provides automation logic for scraping clinic websites and writing results to a Google
+Sheet.  The core entry point is `monitor_loop`, which continuously monitors a column of
+websites, navigates to each site, uses ChatGPT to locate a staff/providers page, counts the
+number of physicians listed, extracts the clinic phone number and owner names, and then writes
+these details back into the sheet.  This version has been updated so that the phone number and
+owner names are collected at the same time as the doctor count.  Rather than issuing a second
+prompt for contact details, the combined prompt asks ChatGPT to return a CSV line containing
+Phone, Owner First Name, Owner Last Name, and the number of doctors.  This CSV is parsed and
+written into the appropriate columns of the spreadsheet.
+
+The remainder of this file contains the full logic for interacting with ChatGPT, managing
+screenshots, navigating the websites, and reading/writing data to Google Sheets.
+"""
+
 from __future__ import annotations
 
 import time
@@ -16,7 +31,8 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
- # ---- Robust ChatGPT composer finders ----
+
+# ---- Robust ChatGPT composer finders ----
 
 COMPOSER_SELECTORS = [
     "textarea[data-testid='prompt-textarea']",
@@ -32,7 +48,9 @@ SEND_BUTTON_SELECTORS = [
     "//button[.//*[name()='svg' and (@aria-label='Send' or contains(@class,'send'))]]",
 ]
 
+
 def _find_composer(driver: webdriver.Chrome, timeout: float = 5.0):
+    """Return the first visible ChatGPT composer element or None after timeout."""
     end = time.time() + timeout
     while time.time() < end:
         for css in COMPOSER_SELECTORS:
@@ -48,7 +66,9 @@ def _find_composer(driver: webdriver.Chrome, timeout: float = 5.0):
         time.sleep(0.1)
     return None
 
+
 def _click_send(driver: webdriver.Chrome) -> bool:
+    """Attempt to click the Send button on the ChatGPT UI. Returns True on success."""
     # Try CSS first (fastest)
     try:
         btns = driver.find_elements(By.CSS_SELECTOR, "button[data-testid='send-button']")
@@ -72,15 +92,19 @@ def _click_send(driver: webdriver.Chrome) -> bool:
             continue
     return False
 
+
 # Your existing helpers (from your project)
 from t import attach, find_editor
 from chatgpt_response_checker import wait_for_chatgpt_response_via_send_button
 
 # ---- ChatGPT tab helpers ----
 
+
 def open_new_chat(driver: webdriver.Chrome, chat_handle: str, model_url: str = "https://chatgpt.com/?model=gpt-5") -> None:
-    """Reset the ChatGPT composer by opening a brand-new chat thread.
-    Tries clicking the New chat button; if not found, navigates directly to a fresh chat URL.
+    """
+    Reset the ChatGPT composer by opening a brand‑new chat thread.  It first tries clicking a
+    "New chat" button; if not found, it navigates directly to the model URL.  After navigation
+    or clicking, it waits until a composer is available or times out.
     """
     driver.switch_to.window(chat_handle)
     # Try clicking a New chat control if present
@@ -97,10 +121,12 @@ def open_new_chat(driver: webdriver.Chrome, chat_handle: str, model_url: str = "
                 if el.is_displayed():
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
                     try:
-                        el.click(); clicked = True
+                        el.click()
+                        clicked = True
                     except Exception:
                         try:
-                            ActionChains(driver).move_to_element(el).click().perform(); clicked = True
+                            ActionChains(driver).move_to_element(el).click().perform()
+                            clicked = True
                         except Exception:
                             pass
                     if clicked:
@@ -123,12 +149,14 @@ def open_new_chat(driver: webdriver.Chrome, chat_handle: str, model_url: str = "
             break
         time.sleep(0.2)
 
+
 # ---------- New helpers for image handling ----------
+
 
 def screenshot_to_base64(driver: webdriver.Chrome, *, target_width: int = 900, jpeg_quality: int = 40) -> str:
     """
     Capture the current tab as an image and return a BASE64 string suitable for
-    data-URI embedding. We keep the 'no actual PNG on disk' requirement by
+    data-URI embedding.  We keep the 'no actual PNG on disk' requirement by
     working entirely in memory.
 
     Strategy:
@@ -145,6 +173,7 @@ def screenshot_to_base64(driver: webdriver.Chrome, *, target_width: int = 900, j
         try:
             from io import BytesIO
             from PIL import Image  # type: ignore
+
             im = Image.open(BytesIO(raw_png)).convert("RGB")
             w, h = im.size
             if w > target_width:
@@ -177,7 +206,9 @@ def screenshot_to_base64(driver: webdriver.Chrome, *, target_width: int = 900, j
     except Exception:
         return ""
 
+
 # ---------- Additional helpers for visible links and prompt building ----------
+
 
 def get_visible_link_texts(driver: webdriver.Chrome, limit: int = 60) -> list[str]:
     """Return up to `limit` distinct, non-empty visible anchor texts from the page."""
@@ -204,12 +235,12 @@ def get_visible_link_texts(driver: webdriver.Chrome, limit: int = 60) -> list[st
             """
         ) or []
         # Deduplicate and trim to limit
-        uniq = []
-        seen = set()
+        uniq: list[str] = []
+        seen_set: set[str] = set()
         for t in texts:
             tt = t.strip()
-            if tt and tt not in seen:
-                seen.add(tt)
+            if tt and tt not in seen_set:
+                seen_set.add(tt)
                 uniq.append(tt)
                 if len(uniq) >= limit:
                     break
@@ -217,9 +248,13 @@ def get_visible_link_texts(driver: webdriver.Chrome, limit: int = 60) -> list[st
     except Exception:
         return []
 
+
 # --- helper: nav_text reasonable match to links ---
+
+
 def _nav_text_matches_links(nav_text: str, links: list[str]) -> bool:
-    """Return True if `nav_text` reasonably matches one of the visible link texts.
+    """
+    Return True if `nav_text` reasonably matches one of the visible link texts.
     We allow exact and tolerant partial matches.
     """
     if not nav_text:
@@ -240,15 +275,20 @@ def _nav_text_matches_links(nav_text: str, links: list[str]) -> bool:
             return True
     return False
 
+
 # --- Host utilities ---
+
+
 def _host_of(url: str) -> str:
     try:
         return urlparse(url).hostname or ""
     except Exception:
         return ""
 
+
 def switch_to_site_tab_by_host(driver: webdriver.Chrome, expected_host: str, fallback_handle: str | None = None) -> str | None:
-    """Switch to the tab whose URL hostname matches expected_host (case-insensitive).
+    """
+    Switch to the tab whose URL hostname matches expected_host (case-insensitive).
     If not found, switch to fallback_handle if provided. Returns the handle or None.
     """
     expected = (expected_host or "").lower()
@@ -266,7 +306,9 @@ def switch_to_site_tab_by_host(driver: webdriver.Chrome, expected_host: str, fal
         return fallback_handle
     return None
 
+
 def debug_where(driver: webdriver.Chrome, label: str = "") -> None:
+    """Print the current URL and title for debugging purposes."""
     try:
         url = driver.current_url
         title = driver.title
@@ -274,16 +316,42 @@ def debug_where(driver: webdriver.Chrome, label: str = "") -> None:
     except Exception:
         pass
 
+
 # ----- Navigation robustness helpers -----
 
+
 def _likely_staff_url(u: str) -> bool:
+    """Return True for URLs that look like staff/providers/team pages.
+    Avoid broad matches like 'about' that cause false positives.
+    """
     u = (u or "").lower()
-    keywords = ["team", "provider", "providers", "staff", "doctors", "our-team", "meet", "about-us", "about"]
-    return any(k in u for k in keywords)
+    if not u:
+        return False
+    strong = [
+        "our-team",
+        "team",
+        "providers",
+        "provider",
+        "doctors",
+        "physicians",
+        "veterinarians",
+        "vets",
+        "our-doctors",
+        "meet-the-team",
+        "meet-our-team",
+    ]
+    if any(k in u for k in strong):
+        return True
+    # 'meet' alone is weak; only consider if combined with a strong token
+    if "meet" in u and any(k in u for k in ["team", "doctor", "provider", "staff", "physician", "veterinarian"]):
+        return True
+    return False
 
 
 def _open_hamburger_if_present(driver: webdriver.Chrome) -> None:
-    """Try to open mobile/desktop navigation menus so links become clickable."""
+    """
+    Try to open mobile/desktop navigation menus so links become clickable.
+    """
     candidates = [
         "//button[contains(@aria-label,'menu') or contains(@aria-label,'Menu') or contains(@aria-label,'navigation')]",
         "//button[contains(@class,'hamburger') or contains(@class,'menu') or contains(@class,'nav')]",
@@ -308,7 +376,11 @@ def _open_hamburger_if_present(driver: webdriver.Chrome) -> None:
 
 
 def _dispatch_real_click(driver: webdriver.Chrome, el) -> None:
-    """Fire real-ish mouse events for stubborn JS sites."""
+    """
+    Fire real-ish mouse events for stubborn JS sites.  Some sites intercept click events on
+    anchors, so this helper dispatches a sequence of mouse events (mouseover, mousedown,
+    mouseup, click) at the center of the element to trigger handlers properly.
+    """
     driver.execute_script(
         """
         const el = arguments[0];
@@ -324,7 +396,9 @@ def _dispatch_real_click(driver: webdriver.Chrome, el) -> None:
 
 
 def _wait_for_navigation(driver: webdriver.Chrome, prev_url: str, timeout: float = 5.0) -> bool:
-    """Return True if URL changes or a likely staff keyword appears in the URL within timeout."""
+    """
+    Return True if the URL changes or a likely staff keyword appears in the URL within timeout.
+    """
     end = time.time() + timeout
     while time.time() < end:
         try:
@@ -340,9 +414,11 @@ def _wait_for_navigation(driver: webdriver.Chrome, prev_url: str, timeout: float
 
 
 def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bool:
-    """Click the suggested nav_text using multiple strategies. Returns True on navigation."""
+    """
+    Attempt to click the suggested nav_text using multiple strategies.  Returns True on
+    successful navigation (URL change or staff keyword detection).
+    """
     _open_hamburger_if_present(driver)
-
     # Collect candidate elements by several strategies
     strategies = [
         ("LINK_TEXT", lambda: driver.find_elements(By.LINK_TEXT, nav_text)),
@@ -353,9 +429,8 @@ def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bo
         ("XPATH button", lambda: driver.find_elements(By.XPATH, f"//button[contains(normalize-space(), '{nav_text}')]")),
         ("XPATH nav a", lambda: driver.find_elements(By.XPATH, f"//nav//a[contains(normalize-space(), '{nav_text}')]")),
     ]
-
     start_url = driver.current_url or ""
-    for name, fn in strategies:
+    for _, fn in strategies:
         try:
             elems = fn() or []
         except Exception:
@@ -376,7 +451,6 @@ def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bo
                     return True
             except Exception:
                 continue
-
     # Fallback: heuristically click any visible link with a likely keyword
     try:
         heuristic = driver.find_elements(By.XPATH, "//a[@href]")
@@ -396,12 +470,469 @@ def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bo
     except Exception:
         pass
 
+    # Additional fallback: case-insensitive exact match of anchor text
+    try:
+        target = (nav_text or "").strip().lower()
+        if target:
+            anchors = driver.find_elements(By.XPATH, "//a")
+            for a in anchors:
+                try:
+                    if not a.is_displayed():
+                        continue
+                    txt = (a.text or "").strip().lower()
+                    if not txt:
+                        continue
+                    if txt == target:
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", a)
+                        try:
+                            a.click()
+                        except Exception:
+                            _dispatch_real_click(driver, a)
+                        if _wait_for_navigation(driver, start_url, timeout=6.0):
+                            return True
+                except Exception:
+                    continue
+            # fallback partial match on anchors (case-insens)
+            for a in anchors:
+                try:
+                    if not a.is_displayed():
+                        continue
+                    txt = (a.text or "").strip().lower()
+                    if not txt:
+                        continue
+                    if target in txt or txt in target:
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", a)
+                        try:
+                            a.click()
+                        except Exception:
+                            _dispatch_real_click(driver, a)
+                        if _wait_for_navigation(driver, start_url, timeout=6.0):
+                            return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
     return False
+
+# --- Helper: click anchor by exact text (case-insensitive) ---
+def _click_anchor_by_text(driver: webdriver.Chrome, anchor_text: str) -> bool:
+    """
+    Locate and click the first visible anchor or button element whose text matches anchor_text
+    in a case-insensitive manner.  First attempts an exact match; if none is found,
+    it falls back to a partial (substring) match.  Returns True if a click results in a
+    navigation (URL change).
+    """
+    target = (anchor_text or "").strip().lower()
+    if not target:
+        return False
+    start_url = driver.current_url or ""
+    # Gather both <a> and <button> elements to account for menus implemented with buttons
+    try:
+        elements = driver.find_elements(By.XPATH, "//a | //button")
+    except Exception:
+        elements = []
+    # Helper to click an element and wait for navigation
+    def _attempt_click(el) -> bool:
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            try:
+                el.click()
+            except Exception:
+                _dispatch_real_click(driver, el)
+            end = time.time() + 6.0
+            while time.time() < end:
+                try:
+                    if driver.current_url and driver.current_url != start_url:
+                        return True
+                except Exception:
+                    pass
+                time.sleep(0.2)
+        except Exception:
+            pass
+        return False
+    # First pass: exact match on visible text
+    for el in elements:
+        try:
+            if not el.is_displayed():
+                continue
+            txt = (el.text or "").strip().lower()
+            if txt == target:
+                if _attempt_click(el):
+                    return True
+        except Exception:
+            continue
+    # Second pass: partial/substring match on visible text
+    for el in elements:
+        try:
+            if not el.is_displayed():
+                continue
+            txt = (el.text or "").strip().lower()
+            if not txt:
+                continue
+            # Check substring in either direction to allow close matches
+            if target in txt or txt in target:
+                if _attempt_click(el):
+                    return True
+        except Exception:
+            continue
+    return False
+
+# --- New helper: expand dropdown menus and attempt navigation ---
+def _expand_dropdowns_and_try(driver: webdriver.Chrome, nav_text: str) -> bool:
+    """
+    Some sites tuck the staff/meet team link inside a dropdown menu.  Opening all menus at
+    once can overlap elements and confuse ChatGPT, so this helper opens potential dropdown
+    toggles one at a time.  For each toggle, it clicks to expand the menu, then immediately
+    tries to navigate to the desired link using `navigate_to_suggested_section`.  If the
+    navigation succeeds, True is returned.  Otherwise, the helper proceeds to the next
+    toggle.  If no toggle leads to a successful navigation, False is returned.
+
+    A dropdown toggle is heuristically identified as an anchor or button with either
+    aria-haspopup/aria-expanded attributes or CSS classes containing keywords like
+    'dropdown', 'menu', or 'nav'.  The function also attempts to click using both native
+    click and ActionChains for robustness.
+    """
+    try:
+        # Build an XPath that matches common dropdown or menu toggles.  We target
+        # anchors/buttons that declare `aria-haspopup` or `aria-expanded`, or have class
+        # names suggesting a dropdown.  Note: we OR the selectors using `|` so they are
+        # evaluated together.
+        xpath_toggles = (
+            "//a[(contains(@class,'dropdown') or contains(@class,'menu') or contains(@class,'nav')) and (@aria-haspopup or @aria-expanded)]"
+            " | //button[(contains(@class,'dropdown') or contains(@class,'menu') or contains(@class,'nav')) and (@aria-haspopup or @aria-expanded)]"
+            " | //a[contains(@aria-haspopup,'true') or contains(@aria-expanded,'false')]"
+            " | //button[contains(@aria-haspopup,'true') or contains(@aria-expanded,'false')]"
+        )
+        toggles = driver.find_elements(By.XPATH, xpath_toggles)
+    except Exception:
+        toggles = []
+    for t in toggles:
+        try:
+            if not t.is_displayed():
+                continue
+            # Scroll into view and click to expand the dropdown
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
+            clicked = False
+            try:
+                t.click()
+                clicked = True
+            except Exception:
+                try:
+                    ActionChains(driver).move_to_element(t).click().perform()
+                    clicked = True
+                except Exception:
+                    clicked = False
+            if not clicked:
+                continue
+            # Small wait for menu to expand
+            time.sleep(0.5)
+            # Try to navigate now that the menu is open
+            if navigate_to_suggested_section(driver, nav_text):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+# --- New helper: expand a specific dropdown and navigate to the child link ---
+def _expand_specific_dropdown_and_navigate(driver: webdriver.Chrome, parent_text: str, child_text: str) -> bool:
+    """
+    Given a parent dropdown label and a child link text, attempt to expand only the dropdown
+    associated with `parent_text` and then navigate to `child_text`.  This avoids opening
+    unrelated menus and improves accuracy when ChatGPT specifies a breadcrumb such as
+    "Services > Our Team".  Returns True if navigation succeeds.
+
+    We reuse the same heuristic used in `_expand_dropdowns_and_try` to find potential
+    dropdown toggles, but we filter them by visible text (case-insensitive) matching
+    `parent_text`.  After clicking the matching toggle to expand the menu, we attempt to
+    navigate to `child_text` using `navigate_to_suggested_section`.
+    """
+    try:
+        xpath_toggles = (
+            "//a[(contains(@class,'dropdown') or contains(@class,'menu') or contains(@class,'nav')) and (@aria-haspopup or @aria-expanded)]"
+            " | //button[(contains(@class,'dropdown') or contains(@class,'menu') or contains(@class,'nav')) and (@aria-haspopup or @aria-expanded)]"
+            " | //a[contains(@aria-haspopup,'true') or contains(@aria-expanded,'false')]"
+            " | //button[contains(@aria-haspopup,'true') or contains(@aria-expanded,'false')]"
+        )
+        toggles = driver.find_elements(By.XPATH, xpath_toggles)
+    except Exception:
+        toggles = []
+    target = (parent_text or "").strip().lower()
+    for t in toggles:
+        try:
+            if not t.is_displayed():
+                continue
+            # Determine the visible text for comparison; fall back to aria-label if needed
+            visible = (t.text or "").strip().lower()
+            if not visible:
+                try:
+                    visible = (t.get_attribute('aria-label') or "").strip().lower()
+                except Exception:
+                    visible = ""
+            # Skip toggles that do not match the parent label
+            if not visible or target not in visible:
+                continue
+            # Scroll into view
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
+            # First attempt: open dropdown via hover (mouse over) to avoid triggering navigation on anchors
+            try:
+                ActionChains(driver).move_to_element(t).perform()
+                time.sleep(0.5)
+            except Exception:
+                pass
+            # After hover, try to click the child link directly (case-insensitive exact match)
+            if _click_anchor_by_text(driver, child_text):
+                return True
+            # Second attempt: click only if the element is not a navigational anchor with an href
+            tag = (t.tag_name or "").lower()
+            href = ""
+            try:
+                href = t.get_attribute('href') or ""
+            except Exception:
+                href = ""
+            if tag != 'a' or not href:
+                clicked = False
+                try:
+                    t.click()
+                    clicked = True
+                except Exception:
+                    try:
+                        ActionChains(driver).move_to_element(t).click().perform()
+                        clicked = True
+                    except Exception:
+                        clicked = False
+                if clicked:
+                    time.sleep(0.5)
+                    # After expanding via click, attempt to click the child link directly
+                    if _click_anchor_by_text(driver, child_text):
+                        return True
+        except Exception:
+            continue
+    return False
+
+
+# --- New helper: navigate by reading href of a link with given text ---
+def _navigate_by_text_via_direct_get(driver: webdriver.Chrome, anchor_text: str) -> bool:
+    """
+    Find anchors whose visible text matches anchor_text (exact/contains, case-insensitive),
+    pick the best candidate by scoring text and href, and navigate by driver.get(href).
+    This bypasses tricky hover/click behaviors and is robust when the submenu link exists
+    in the DOM (header/footer) but is hard to click.
+    """
+    target = (anchor_text or "").strip()
+    if not target:
+        return False
+    start_url = driver.current_url or ""
+    try:
+        anchors = driver.find_elements(By.XPATH, "//a[normalize-space()]")
+    except Exception:
+        anchors = []
+
+    def _score(a) -> int:
+        try:
+            text = (a.text or "").strip()
+            href = (a.get_attribute('href') or '').strip()
+        except Exception:
+            return -1
+        if not href or href.startswith('#') or href.lower().startswith('javascript:'):
+            return -1
+        s = 0
+        # Prefer exact text match
+        if text.lower() == target.lower():
+            s += 50
+        # Partial match
+        if target.lower() in text.lower() or text.lower() in target.lower():
+            s += 20
+        # Staff-like text and URL
+        s += _score_staff_label(text)
+        if _likely_staff_url(href):
+            s += 80
+        # Prefer same-host URLs
+        try:
+            cur_host = _host_of(start_url)
+            href_host = _host_of(href)
+            if cur_host and href_host and (href_host == cur_host or href_host.endswith('.' + cur_host)):
+                s += 10
+        except Exception:
+            pass
+        return s
+
+    best = None
+    best_score = 0
+    for a in anchors:
+        sc = _score(a)
+        if sc > best_score:
+            best = a; best_score = sc
+    if best and best_score > 0:
+        try:
+            href = best.get_attribute('href') or ''
+        except Exception:
+            href = ''
+        if href:
+            try:
+                driver.get(href)
+                if _wait_for_navigation(driver, start_url, timeout=8.0):
+                    return True
+            except Exception:
+                pass
+    return False
+
+def _navigate_best_staff_link_anywhere(driver: webdriver.Chrome) -> bool:
+    """
+    Scan all anchors on the page and navigate to the best candidate likely to be a staff/providers page,
+    based on label/href scoring. Uses direct driver.get on the chosen href.
+    """
+    start_url = driver.current_url or ""
+    try:
+        anchors = driver.find_elements(By.XPATH, "//a[@href]")
+    except Exception:
+        anchors = []
+
+    def _score_any(a) -> int:
+        try:
+            text = (a.text or "").strip()
+            href = (a.get_attribute('href') or '').strip()
+        except Exception:
+            return -1
+        if not href or href.startswith('#') or href.lower().startswith('javascript:'):
+            return -1
+        s = 0
+        s += _score_staff_label(text)
+        if _likely_staff_url(href):
+            s += 100
+        # Prefer shorter href paths (less noisy query strings)
+        s -= min(len(href), 200) // 50  # small penalty for very long URLs
+        # Prefer same host
+        try:
+            cur_host = _host_of(start_url)
+            href_host = _host_of(href)
+            if cur_host and href_host and (href_host == cur_host or href_host.endswith('.' + cur_host)):
+                s += 10
+        except Exception:
+            pass
+        return s
+
+    best = None
+    best_score = 0
+    for a in anchors:
+        sc = _score_any(a)
+        if sc > best_score:
+            best = a; best_score = sc
+
+    if best and best_score >= 90:
+        try:
+            href = best.get_attribute('href') or ''
+        except Exception:
+            href = ''
+        if href:
+            try:
+                driver.get(href)
+                if _wait_for_navigation(driver, start_url, timeout=8.0):
+                    return True
+            except Exception:
+                pass
+    return False
+
+# --- New helpers: choose and click best staff-like child under a parent dropdown ---
+def _score_staff_label(label: str) -> int:
+    l = (label or "").strip().lower()
+    if not l:
+        return 0
+    # Higher score = more likely to be staff/providers
+    scores = [
+        ("our team", 100),
+        ("team", 90),
+        ("providers", 90),
+        ("meet the team", 95),
+        ("meet our team", 95),
+        ("doctors", 85),
+        ("physicians", 85),
+        ("staff", 80),
+        ("veterinarians", 80),
+        ("provider", 75),
+        ("doctor", 75),
+        ("meet", 60),
+        ("about us", 10),
+        ("about", 5),
+    ]
+    score = 0
+    for k, s in scores:
+        if k in l:
+            score = max(score, s)
+    return score
+
+def _expand_parent_and_click_best_staff_child(driver: webdriver.Chrome, parent_text: str) -> bool:
+    """Safely expand a parent dropdown (hover-first), pick the most staff-like child, and click it."""
+    try:
+        xpath_toggles = (
+            "//a | //button"
+        )
+        toggles = driver.find_elements(By.XPATH, xpath_toggles)
+    except Exception:
+        toggles = []
+    target = (parent_text or "").strip().lower()
+    for t in toggles:
+        try:
+            if not t.is_displayed():
+                continue
+            visible = (t.text or "").strip()
+            if not visible:
+                continue
+            if target not in visible.strip().lower():
+                continue
+            # Ascend to parent LI container
+            li = t
+            try:
+                li = t.find_element(By.XPATH, "ancestor::li[1]")
+            except Exception:
+                pass
+            # Hover to reveal submenu if possible
+            try:
+                ActionChains(driver).move_to_element(t).perform()
+                time.sleep(0.5)
+            except Exception:
+                pass
+            # Collect child anchors under LI only
+            try:
+                children = li.find_elements(By.XPATH, ".//ul//a")
+            except Exception:
+                children = []
+            best = None
+            best_score = 0
+            for a in children:
+                try:
+                    if not a.is_displayed():
+                        continue
+                    txt = (a.text or "").strip()
+                    if not txt:
+                        continue
+                    sc = _score_staff_label(txt)
+                    if sc > best_score:
+                        best = a; best_score = sc
+                except Exception:
+                    continue
+            if best and best_score >= 60:  # require reasonable confidence
+                start_url = driver.current_url or ""
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", best)
+                try:
+                    best.click()
+                except Exception:
+                    try:
+                        ActionChains(driver).move_to_element(best).click().perform()
+                    except Exception:
+                        _dispatch_real_click(driver, best)
+                if _wait_for_navigation(driver, start_url, timeout=6.0):
+                    return True
+        except Exception:
+            continue
+    return False
+
 
 def build_staff_nav_prompt(image_b64: str | None, link_texts: list[str], *, max_chars: int = 9000) -> str:
     """
-    Prefer an image-based prompt, but if the resulting message would be huge, fall
-    back to a compact text-only prompt with the page's visible link texts.
+    Build a prompt asking ChatGPT to identify the navigation link that leads to the staff/providers
+    page.  If an image is provided, embed it in the prompt; otherwise fall back to a compact list
+    of visible links.  The prompt instructs ChatGPT to reply with only the exact link text.
     """
     task = (
         "You are seeing a clinic homepage. Identify the ONE best clickable element (exact visible link text) from the navigation bar "
@@ -418,7 +949,12 @@ def build_staff_nav_prompt(image_b64: str | None, link_texts: list[str], *, max_
         f"{task}\n\nHere are the visible links on the homepage. Choose only one of these EXACT texts:\n{compact}"
     )
 
+
 def build_count_prompt(image_b64: str | None, *, max_chars: int = 9000) -> str:
+    """
+    Build a prompt asking ChatGPT to count the number of doctors visible on a page.  Returns an
+    image-based prompt if possible; otherwise a shorter text-only prompt.
+    """
     task = (
         "Count how many DOCTORS are listed on this page. Exclude non-physician staff. "
         "Reply with a single integer only."
@@ -432,14 +968,15 @@ def build_count_prompt(image_b64: str | None, *, max_chars: int = 9000) -> str:
         f"{task}\n\n(Screenshot omitted for length.) Use headings and visible names to infer the count."
     )
 
+
 # --- New helper: prompt for phone/owner details as strict CSV ---
+
 
 def build_details_prompt(image_b64: str | None, *, max_chars: int = 9000) -> str:
     """
     Ask for the Clinic Phone Number and Owner's first/last names, returned as a strict CSV:
-    Phone, Owner First Name, Owner Last Name
-    If a field is unknown/not visible, return it empty but keep the commas, e.g.: ",John,Smith" or "123-456-7890,,"
-    Do NOT include any labels or extra words.
+    Phone, Owner First Name, Owner Last Name.  If a field is unknown/not visible, return it empty
+    but keep the commas.  Do not include any labels or extra words.
     """
     task = (
         "Extract these fields from this clinic website page ONLY from what is visible in the screenshot:\n"
@@ -453,7 +990,7 @@ def build_details_prompt(image_b64: str | None, *, max_chars: int = 9000) -> str
             return candidate
     return task
 
-# --- Helper: build URL-only details prompt ---
+
 def build_details_prompt_from_url(site_url: str) -> str:
     """
     Ask GPT to visit the given website and return the phone and owner names as strict CSV.
@@ -468,13 +1005,13 @@ def build_details_prompt_from_url(site_url: str) -> str:
         "• Do not guess. Do not add explanations."
     )
 
+
 def extract_first_integer(text: str) -> str:
     """
-    Given a string returned from ChatGPT, attempt to extract the first
-    occurrence of an integer.  If no integer is found, return the
-    stripped text (useful as a fallback).  This helper is used when
-    ChatGPT is asked to count doctors on a page; we expect it to return
-    either a plain number or text containing a number.
+    Given a string returned from ChatGPT, attempt to extract the first occurrence of an integer.
+    If no integer is found, return the stripped text (useful as a fallback).  This helper is
+    used when ChatGPT is asked to count doctors on a page; we expect it to return either a
+    plain number or text containing a number.
     """
     if not text:
         return ""
@@ -484,12 +1021,15 @@ def extract_first_integer(text: str) -> str:
         return m.group(0)
     return text.strip()
 
+
 # ---------- New helpers for image upload and ChatGPT image prompt ----------
 
 
 def save_temp_jpeg_screenshot(driver: webdriver.Chrome, *, target_width: int = 900, jpeg_quality: int = 40) -> str:
-    """Capture current tab, compress to JPEG if possible, write to a temp file, and return its path.
-    The file is intended to be ephemeral (we remove it right after uploading to ChatGPT)."""
+    """
+    Capture current tab, compress to JPEG if possible, write to a temp file, and return its path.
+    The file is intended to be ephemeral (we remove it right after uploading to ChatGPT).
+    """
     raw_png = driver.get_screenshot_as_png()
     if not raw_png:
         raise RuntimeError("screenshot failed")
@@ -513,13 +1053,16 @@ def save_temp_jpeg_screenshot(driver: webdriver.Chrome, *, target_width: int = 9
             f.write(raw_png)
         return tmp_path
 
+
 # --- Full-page capture using Chrome DevTools Protocol (no scrolling) ---
 
 
 # --- Full-page capture using Chrome DevTools Protocol (safe scaled JPEG, no PIL) ---
 
+
 def _cdp_capture_fullpage_jpeg(driver: webdriver.Chrome, *, target_width: int = 1400, quality: int = 50, max_pixels: int = 40_000_000) -> bytes:
-    """Return a JPEG bytes of the full page using CDP captureScreenshot with scaling.
+    """
+    Return a JPEG bytes of the full page using CDP captureScreenshot with scaling.
     We cap total pixels via clip.scale to avoid Pillow DecompressionBomb and huge payloads.
     """
     try:
@@ -550,7 +1093,8 @@ def _cdp_capture_fullpage_jpeg(driver: webdriver.Chrome, *, target_width: int = 
 
 
 def save_temp_fullpage_jpeg_screenshot(driver: webdriver.Chrome, *, target_width: int = 1400, jpeg_quality: int = 50) -> str:
-    """Capture a single full-page screenshot via CDP as JPEG (scaled safely) and return temp file path.
+    """
+    Capture a single full-page screenshot via CDP as JPEG (scaled safely) and return temp file path.
     No PIL used; avoids DecompressionBomb. Falls back to viewport PNG->JPEG only if necessary.
     """
     try:
@@ -581,8 +1125,12 @@ def save_temp_fullpage_jpeg_screenshot(driver: webdriver.Chrome, *, target_width
             f.write(raw_png)
     return tmp_path
 
+
 def _find_composer_file_input(driver: webdriver.Chrome):
-    """Locate ChatGPT's hidden <input type=file> used to attach images."""
+    """
+    Locate ChatGPT's hidden <input type=file> used to attach images.  Returns the input element
+    or None if not found.
+    """
     # Try common locations/selectors; DOM can vary over time
     candidates = [
         "form input[type='file']",
@@ -610,8 +1158,9 @@ def _find_composer_file_input(driver: webdriver.Chrome):
 
 
 def _hide_camera_tile_in_composer(driver: webdriver.Chrome) -> None:
-    """Hide ChatGPT's built-in gray camera tile inside the active composer form (visual only).
-    This tile is not an attachment but shows up as a second tile. We apply a scoped CSS style
+    """
+    Hide ChatGPT's built‑in gray camera tile inside the active composer form (visual only).
+    This tile is not an attachment but shows up as a second tile.  We apply a scoped CSS style
     to the current form so only this composer is affected.
     """
     try:
@@ -623,7 +1172,7 @@ def _hide_camera_tile_in_composer(driver: webdriver.Chrome) -> None:
             """
             (function(form){
               try{
-                // Inject a one-off style that hides obvious camera tiles in the composer only
+                // Inject a one‑off style that hides obvious camera tiles in the composer only
                 const STYLE_ID = 'gpt-hide-camera-tile-style';
                 let st = form.querySelector('#'+STYLE_ID);
                 if(!st){
@@ -649,15 +1198,16 @@ def _hide_camera_tile_in_composer(driver: webdriver.Chrome) -> None:
     except Exception:
         pass
 
+
 def clear_chatgpt_attachments(driver: webdriver.Chrome, max_passes: int = 6) -> None:
-    """Remove any pre-attached images in the *current* composer to avoid duplicates.
+    """
+    Remove any pre‑attached images in the *current* composer to avoid duplicates.
     We scope all queries to the active <form> so we don't touch prior messages.
     """
     try:
         form = driver.find_element(By.XPATH, "//form[.//textarea or .//div[@contenteditable='true']]")
     except Exception:
         return
-
     def _thumb_nodes():
         # Nodes representing attachment chips/thumbnails inside the composer
         xps = [
@@ -666,15 +1216,15 @@ def clear_chatgpt_attachments(driver: webdriver.Chrome, max_passes: int = 6) -> 
             ".//figure[contains(@class,'image') or contains(@class,'attachment')]",
             ".//img/ancestor::*[contains(@class,'chip') or contains(@class,'thumb') or contains(@class,'preview')][1]",
         ]
-        out = []
+        out: list = []
         for xp in xps:
             try:
                 out.extend(form.find_elements(By.XPATH, xp))
             except Exception:
                 pass
         # Dedup while preserving order
-        seen = set()
-        uniq = []
+        seen: set = set()
+        uniq: list = []
         for n in out:
             try:
                 k = n.id
@@ -686,7 +1236,6 @@ def clear_chatgpt_attachments(driver: webdriver.Chrome, max_passes: int = 6) -> 
             if n.is_displayed():
                 uniq.append(n)
         return uniq
-
     def _remove_buttons():
         # Click all removal/close buttons we can find in the composer
         btn_xps = [
@@ -712,7 +1261,6 @@ def clear_chatgpt_attachments(driver: webdriver.Chrome, max_passes: int = 6) -> 
             except Exception:
                 pass
         return clicked
-
     for _ in range(max_passes):
         # 1) Click any explicit remove/close buttons
         removed = _remove_buttons()
@@ -744,8 +1292,8 @@ def clear_chatgpt_attachments(driver: webdriver.Chrome, max_passes: int = 6) -> 
             break
 
 
-# Helper for debugging: count visible attachments/thumbnails in the current composer <form>
 def _count_attachments_for_debug(driver: webdriver.Chrome) -> int:
+    """Helper for debugging: count visible attachments/thumbnails in the current composer form."""
     try:
         form = driver.find_element(By.XPATH, "//form[.//textarea or .//div[@contenteditable='true']]")
     except Exception:
@@ -757,8 +1305,11 @@ def _count_attachments_for_debug(driver: webdriver.Chrome) -> int:
     except Exception:
         return 0
 
+
 def upload_image_to_chatgpt(driver: webdriver.Chrome, image_path: str, timeout: float = 10.0) -> None:
-    """Attach the given image file to the ChatGPT composer and wait for the preview to appear."""
+    """
+    Attach the given image file to the ChatGPT composer and wait for the preview to appear.
+    """
     file_input = _find_composer_file_input(driver)
     if not file_input:
         raise RuntimeError("Could not find ChatGPT file input to upload image")
@@ -776,7 +1327,9 @@ def upload_image_to_chatgpt(driver: webdriver.Chrome, image_path: str, timeout: 
         # Continue anyway; sometimes the preview element names differ
         pass
 
+
 # ---------- Reliable sending helpers ----------
+
 
 def _find_send_button(driver: webdriver.Chrome):
     candidates = [
@@ -793,7 +1346,11 @@ def _find_send_button(driver: webdriver.Chrome):
 
 
 def _send_message(driver: webdriver.Chrome, editor) -> None:
-    """Try multiple reliable ways to send: Enter, Send button, Cmd/Ctrl+Enter, form submit, and a final nudge."""
+    """
+    Try multiple reliable ways to send: Enter, Send button, Cmd/Ctrl+Enter, form submit, and a final
+    nudge.  This function attempts each strategy in order until the assistant starts streaming
+    output.
+    """
     def _enter():
         try:
             driver.execute_script("arguments[0].focus();", editor)
@@ -801,7 +1358,6 @@ def _send_message(driver: webdriver.Chrome, editor) -> None:
             time.sleep(0.2)
         except Exception:
             pass
-
     def _cmd_ctrl_enter():
         try:
             ActionChains(driver).key_down(Keys.COMMAND).send_keys(Keys.ENTER).key_up(Keys.COMMAND).perform()
@@ -812,11 +1368,9 @@ def _send_message(driver: webdriver.Chrome, editor) -> None:
                 time.sleep(0.2)
             except Exception:
                 pass
-
     def _click_send_btn():
         _click_send(driver)
         time.sleep(0.2)
-
     def _form_submit():
         try:
             form = driver.find_element(By.XPATH, "//form[.//textarea or .//div[@contenteditable='true']]")
@@ -824,7 +1378,6 @@ def _send_message(driver: webdriver.Chrome, editor) -> None:
             time.sleep(0.2)
         except Exception:
             pass
-
     _enter()
     if _likely_streaming(driver): return
     _click_send_btn()
@@ -848,6 +1401,7 @@ def _send_message(driver: webdriver.Chrome, editor) -> None:
         pass
     _enter()
 
+
 def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, image_path: str, prompt: str) -> str:
     """
     Switch to ChatGPT, upload image via file input, paste prompt, send, and return reply text.
@@ -855,29 +1409,25 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
     """
     driver.switch_to.window(chat_handle)
     debug_where(driver, label="second-prompt: on-chatgpt-tab")
-
     # Find a fresh composer BEFORE upload
     editor = _find_composer(driver, timeout=8) or find_editor(driver, timeout=8)
     if not editor:
         return ""
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", editor)
     driver.execute_script("arguments[0].focus();", editor)
-
-    # Clear any previous attachments and hide the non-attachment camera tile, then upload **once**
+    # Clear any previous attachments and hide the non‑attachment camera tile, then upload **once**
     clear_chatgpt_attachments(driver)
     _hide_camera_tile_in_composer(driver)
     upload_image_to_chatgpt(driver, image_path)
     time.sleep(0.25)  # small settle for DOM re-render
     _hide_camera_tile_in_composer(driver)
     # Guard: do not re-attach in this function; one attachment per message by design.
-
     # IMPORTANT: Re-find the composer AFTER upload (DOM often re-renders)
     editor = _find_composer(driver, timeout=8) or find_editor(driver, timeout=8)
     if not editor:
         return ""
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", editor)
     driver.execute_script("arguments[0].focus();", editor)
-
     # Clear and paste prompt
     try:
         editor.send_keys(Keys.CONTROL, 'a'); editor.send_keys(Keys.DELETE)
@@ -897,10 +1447,8 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
                 pasted = False
     if not pasted:
         return ""
-
     # Robust send (Enter, Send button, Cmd/Ctrl+Enter, submit, nudge)
     _send_message(driver, editor)
-
     # Extra fallbacks: explicit JS click on the send button and re-focus send
     if not _likely_streaming(driver):
         try:
@@ -916,7 +1464,6 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
             editor.send_keys(Keys.SPACE); editor.send_keys(Keys.BACK_SPACE); editor.send_keys(Keys.ENTER)
         except Exception:
             pass
-
     reply = wait_for_chatgpt_response_via_send_button(
         driver,
         timeout=30,
@@ -925,7 +1472,6 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
         composer_css="textarea[data-testid='prompt-textarea'], div[contenteditable='true'][data-testid='prompt-textarea'], div[contenteditable='true'][role='textbox']",
         nudge_text=".",
     )
-
     # One retry if nothing came back (sometimes the first send doesn't take with an image)
     if not reply:
         _send_message(driver, editor)
@@ -937,16 +1483,20 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
             composer_css="textarea[data-testid='prompt-textarea'], div[contenteditable='true'][data-testid='prompt-textarea'], div[contenteditable='true'][role='textbox']",
             nudge_text=".",
         )
-
     return reply or ""
 
+
 # ---------- Config ----------
+
+
 SHEET_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1gIJOeJQh4Vu8jhCdVY-ETR01zgQ58buQ2ztmUs7p7u0/edit?gid=0"
 )
 
+
 # ---------- Tab / frame utils ----------
+
 
 def find_handle(driver: webdriver.Chrome, *, want_chatgpt: bool = False, want_sheets: bool = False):
     """Return the window handle for ChatGPT or Sheets (if found)."""
@@ -960,8 +1510,13 @@ def find_handle(driver: webdriver.Chrome, *, want_chatgpt: bool = False, want_sh
             return h
     return None
 
+
 def enter_sheets_iframe_if_needed(driver: webdriver.Chrome, timeout: float = 10.0) -> None:
-    """If the grid lives in an iframe, switch into it."""
+    """
+    If the grid lives in an iframe, switch into it.  Some versions of Google Sheets embed the
+    worksheet inside an iframe.  This helper ensures that we are inside the correct iframe
+    context before interacting with the sheet.
+    """
     driver.switch_to.default_content()
     end = time.time() + timeout
     while time.time() < end:
@@ -981,7 +1536,9 @@ def enter_sheets_iframe_if_needed(driver: webdriver.Chrome, timeout: float = 10.
         time.sleep(0.1)
     driver.switch_to.default_content()
 
+
 # ---------- Robust Name-box navigation ----------
+
 
 def _close_invalid_range_modal_if_present(driver: webdriver.Chrome) -> bool:
     """If the 'Invalid range' dialog is open, click OK and return True."""
@@ -1002,6 +1559,7 @@ def _close_invalid_range_modal_if_present(driver: webdriver.Chrome) -> bool:
         pass
     return False
 
+
 def goto_cell(driver: webdriver.Chrome, cell_ref: str) -> None:
     """
     Jump to a cell via the Name box; robust against flaky clicks.
@@ -1009,14 +1567,12 @@ def goto_cell(driver: webdriver.Chrome, cell_ref: str) -> None:
     2) JS focus+value+input fallback
     """
     enter_sheets_iframe_if_needed(driver, timeout=5)
-
     namebox_selectors = [
         "input.waffle-name-box",
         "input[aria-label='Name box']",
         "input[aria-label*='Name box']",
         "input[aria-label*='Range']",
     ]
-
     name_box = None
     for css in namebox_selectors:
         try:
@@ -1028,7 +1584,6 @@ def goto_cell(driver: webdriver.Chrome, cell_ref: str) -> None:
             continue
     if not name_box:
         raise NoSuchElementException("Name box not found (are we on the sheet tab?)")
-
     def js_set_and_submit(el, value):
         driver.execute_script(
             """
@@ -1042,7 +1597,6 @@ def goto_cell(driver: webdriver.Chrome, cell_ref: str) -> None:
             el, value
         )
         driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ENTER)
-
     for _ in range(2):
         try:
             try:
@@ -1055,7 +1609,6 @@ def goto_cell(driver: webdriver.Chrome, cell_ref: str) -> None:
                 name_box.send_keys(Keys.ENTER)
             except Exception:
                 js_set_and_submit(name_box, cell_ref)
-
             time.sleep(0.05)
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
             time.sleep(0.02)
@@ -1063,12 +1616,13 @@ def goto_cell(driver: webdriver.Chrome, cell_ref: str) -> None:
         except Exception:
             _close_invalid_range_modal_if_present(driver)
             time.sleep(0.05)
-
     js_set_and_submit(name_box, cell_ref)
     time.sleep(0.05)
     driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
 
+
 # ---------- Sheets helpers (copy, paste, headers, next-empty-row) ----------
+
 
 def _copy_active_cell_text(driver: webdriver.Chrome) -> str:
     """Copy the active cell to clipboard and return the text."""
@@ -1076,26 +1630,30 @@ def _copy_active_cell_text(driver: webdriver.Chrome) -> str:
     time.sleep(0.04)
     return (pyperclip.paste() or "").strip()
 
+
 def read_cell(driver: webdriver.Chrome, cell_ref: str) -> str:
     """Read one cell's text."""
     goto_cell(driver, cell_ref)
     return _copy_active_cell_text(driver)
 
+
 def get_col_values(driver: webdriver.Chrome, col_letter: str) -> list[str]:
     """Copy an entire column and return non-empty lines in order."""
     enter_sheets_iframe_if_needed(driver, timeout=10)
     goto_cell(driver, f"{col_letter}1")
-    ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.SPACE).key_up(Keys.CONTROL).perform()
+    ActionChains(driver).key_down(Keys.CONTROL).send_keys(' ').key_up(Keys.CONTROL).perform()
     time.sleep(0.05)
     ActionChains(driver).key_down(Keys.CONTROL).send_keys('c').key_up(Keys.CONTROL).perform()
     time.sleep(0.08)
     raw = pyperclip.paste() or ""
     return [ln.strip() for ln in raw.splitlines() if ln.strip()]
 
+
 def find_next_empty_row(driver: webdriver.Chrome) -> int:
     """Next empty row = len(non-empty Col A) + 1 (headers assumed on row 1)."""
     col_a = get_col_values(driver, "A")
     return (len(col_a) + 1) if col_a else 2
+
 
 def write_headers_once_simple(driver: webdriver.Chrome) -> None:
     """
@@ -1119,7 +1677,10 @@ def write_headers_once_simple(driver: webdriver.Chrome) -> None:
             active.send_keys(Keys.TAB)
     # Do not send ENTER here; keep focus on headers row.
 
+
 # --- New helpers: normalize site URL and find row for site ---
+
+
 def _normalize_site(u: str) -> str:
     if not u:
         return ""
@@ -1135,10 +1696,11 @@ def _normalize_site(u: str) -> str:
     except Exception:
         return u.rstrip("/")
 
+
 def find_row_for_site(driver: webdriver.Chrome, site: str) -> int | None:
     """
-    Return the 1-based row index where Column A equals `site` (normalized),
-    or None if not present. Scans the current non-empty A column quickly.
+    Return the 1-based row index where Column A equals `site` (normalized), or None if not present.
+    Scans the current non-empty A column quickly.
     """
     target = _normalize_site(site)
     vals = get_col_values(driver, "A")
@@ -1147,7 +1709,10 @@ def find_row_for_site(driver: webdriver.Chrome, site: str) -> int | None:
             return idx
     return None
 
+
 # --- New paste helpers: paste into explicit row, and at next empty row ---
+
+
 def paste_row_into_row(driver: webdriver.Chrome, row: int, values: list[str]) -> None:
     """
     Paste values across A..E at the specified 1-based `row` by **addressing each cell directly**.
@@ -1186,6 +1751,7 @@ def paste_row_into_row(driver: webdriver.Chrome, row: int, values: list[str]) ->
                     pasted = False
         time.sleep(0.02)
 
+
 def paste_row_at_next_empty(driver: webdriver.Chrome, values: list[str]) -> int:
     """
     Paste values across A..E at the next empty row and return that row index.
@@ -1194,7 +1760,9 @@ def paste_row_at_next_empty(driver: webdriver.Chrome, values: list[str]) -> int:
     paste_row_into_row(driver, row, values)
     return row
 
+
 # ---------- ChatGPT side ----------
+
 
 def _assistant_count_and_last_text(driver: webdriver.Chrome):
     sels = [
@@ -1211,6 +1779,7 @@ def _assistant_count_and_last_text(driver: webdriver.Chrome):
             count = max(count, len(nodes))
     return count, best_text
 
+
 def _likely_streaming(driver: webdriver.Chrome) -> bool:
     try:
         for btn in driver.find_elements(By.TAG_NAME, "button"):
@@ -1221,6 +1790,7 @@ def _likely_streaming(driver: webdriver.Chrome) -> bool:
     except Exception:
         pass
     return False
+
 
 def _ensure_prompt_sent(driver: webdriver.Chrome, editor, prompt: str, max_attempts=2) -> bool:
     base_count, base_last = _assistant_count_and_last_text(driver)
@@ -1239,6 +1809,7 @@ def _ensure_prompt_sent(driver: webdriver.Chrome, editor, prompt: str, max_attem
         time.sleep(0.12)
     return False
 
+
 def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: str, response_timeout: float = 20) -> str:
     """
     Send a (potentially very large) prompt to ChatGPT by pasting from clipboard so
@@ -1248,17 +1819,14 @@ def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: st
     editor = find_editor(driver, timeout=10)
     if not editor:
         return ""
-
     # Focus the composer
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", editor)
     driver.execute_script("arguments[0].focus();", editor)
-
     # Clear any existing text
     try:
         editor.send_keys(Keys.CONTROL, 'a'); editor.send_keys(Keys.DELETE)
     except Exception:
         pass
-
     # Paste the prompt via clipboard (supports very long data URIs)
     pyperclip.copy(prompt)
     pasted = False
@@ -1271,14 +1839,12 @@ def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: st
             pasted = True
         except Exception:
             pasted = False
-
     if not pasted:
         # Fallback: type (slower and may truncate very long prompts)
         try:
             editor.send_keys(prompt)
         except Exception:
             pass
-
     # Send the message reliably
     try:
         editor.send_keys(Keys.ENTER)
@@ -1293,7 +1859,6 @@ def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: st
             driver.execute_script("arguments[0].focus();", editor); editor.send_keys(Keys.ENTER)
         except Exception:
             pass
-
     reply = wait_for_chatgpt_response_via_send_button(
         driver,
         timeout=response_timeout,
@@ -1303,7 +1868,10 @@ def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: st
         nudge_text=".",
     )
     return reply or ""
+
+
 # ---------- Parsing / filtering ----------
+
 
 def _strip_fences_and_ws(s: str) -> str:
     if not s:
@@ -1314,6 +1882,7 @@ def _strip_fences_and_ws(s: str) -> str:
         s = "\n".join(ln for ln in s.splitlines() if not ln.strip().startswith("```")).strip()
     return s
 
+
 def _clean_piece(p: str) -> str:
     """Trim, drop surrounding quotes/backticks."""
     if p is None:
@@ -1321,19 +1890,18 @@ def _clean_piece(p: str) -> str:
     x = p.strip().strip("`").strip().strip('"').strip("'")
     return x
 
+
 def parse_comma_reply(reply: str) -> tuple[str, str, str, str]:
     """
-    Expect: 'Phone, OwnerFirst, OwnerLast, NumLocationsOrDoctors'
-    Returns a 4-tuple (phone, first, last, locations/doctors), padding with "" if missing.
-    IMPORTANT: Preserve empty fields. Do NOT drop empty tokens or we will shift columns.
+    Expect: 'Phone, OwnerFirst, OwnerLast, NumLocations'
+    Returns a 4-tuple (phone, first, last, locations), padding with "" if missing.
     """
     s = _strip_fences_and_ws(reply).replace("\n", " ").replace("  ", " ")
     parts = [ _clean_piece(x) for x in s.split(",") ]
-    # Preserve empties to keep correct alignment; pad/truncate to exactly 4
+    # Preserve empty fields to maintain correct column alignment; pad to at least 4
     while len(parts) < 4:
         parts.append("")
     phone, first, last, locs = parts[:4]
-
     # Optional light normalization
     # phone: keep common characters
     phone = re.sub(r"[^0-9xX()+\-.\s]", "", phone).strip()
@@ -1343,29 +1911,41 @@ def parse_comma_reply(reply: str) -> tuple[str, str, str, str]:
         locs = m.group(0)
     return phone, first, last, locs
 
-# --- New parser: strict 3-field CSV (Phone, First, Last) ---
+
 def parse_three_reply(reply: str) -> tuple[str, str, str]:
     """
     Expect: 'Phone, First, Last' -> returns a 3-tuple, empty strings if missing.
     """
     s = _strip_fences_and_ws(reply).replace("\n", " ").replace("  ", " ")
     parts = [ _clean_piece(x) for x in s.split(",") ]
+    # Preserve empty fields and pad to at least 3
     while len(parts) < 3:
         parts.append("")
     phone, first, last = parts[:3]
     phone = re.sub(r"[^0-9xX()+\-.\s]", "", phone).strip()
     return phone, first, last
 
+
 def filter_reply(text: str) -> tuple[str, str, str, str]:
     """High-level filter: convert raw assistant text into the 4 fields we store."""
     return parse_comma_reply(text)
 
+
 # ---------- Main loop ----------
 
+
 def monitor_loop(sheet_url: str = SHEET_URL) -> None:
+    """
+    Main processing loop.  Attaches to a running Chrome instance, ensures the Google Sheets and
+    ChatGPT tabs are open, writes headers to the sheet, then continuously scans for new sites in
+    column Z.  For each new site, it navigates to the homepage, asks ChatGPT which navigation
+    link leads to the staff/providers page, clicks it, captures the staff page, asks ChatGPT to
+    return phone, owner names, and doctor count as a single CSV line, parses the response, and
+    writes the data back to the sheet.  Errors are handled gracefully and recorded as blank
+    entries so the site can be revisited later.
+    """
     driver = attach()
     time.sleep(0.5)
-
     # Ensure tabs
     sheet_handle = find_handle(driver, want_sheets=True)
     if not sheet_handle:
@@ -1377,15 +1957,12 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
         driver.execute_script("window.open('https://chatgpt.com/', '_blank');")
         time.sleep(0.8)
         chat_handle = driver.window_handles[-1]
-
     # Step 1: headers
     driver.switch_to.window(sheet_handle)
     write_headers_once_simple(driver)
-
     processed: set[str] = set()
     # Track reserved rows for sites
     site_row_map: dict[str, int] = {}
-
     while True:
         # Step 2: scan column Z
         driver.switch_to.window(sheet_handle)
@@ -1395,17 +1972,15 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
             print(f"[scan] failed: {e}")
             time.sleep(0.6)
             continue
-
         new_sites = [v for v in z_vals if v and v not in processed]
         if not new_sites:
             time.sleep(0.6)  # Step 4: no entries → loop
             continue
-
         for site in new_sites:
             processed.add(site)
             # For each website, open it in a new tab, capture a screenshot, ask ChatGPT
             # how to navigate to the staff/doctor page, click the suggested link,
-            # take another screenshot, and ask ChatGPT to count the doctors.
+            # take another screenshot, and ask ChatGPT to return phone/names/doctors as CSV.
             try:
                 # Start a brand-new ChatGPT thread for this website
                 open_new_chat(driver, chat_handle)
@@ -1417,17 +1992,16 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 new_handles = [h for h in driver.window_handles if h not in existing_handles]
                 site_handle = new_handles[-1] if new_handles else driver.window_handles[-1]
                 driver.switch_to.window(site_handle)
-
                 # Allow initial load
                 time.sleep(2.0)
-
                 # --- Screenshot + ask GPT where to click ---
                 tmp_img1 = save_temp_fullpage_jpeg_screenshot(driver, target_width=1400, jpeg_quality=50)
                 try:
                     prompt1 = (
-                        "You are seeing a clinic homepage. Identify the ONE best clickable element (exact visible link text) from the navigation bar "
-        "that will lead to a page listing doctors/staff (e.g., 'Our Team', 'Providers', 'Meet the Doctors'). "
-        "Reply with ONLY the exact link text, and ensure the text is accurate and visible on the image page."
+                        "You are seeing a clinic homepage. Identify the ONE best clickable element from the navigation bar "
+                        "that will lead to a page listing doctors/staff (e.g., 'Our Team', 'Providers', 'Meet the Doctors'). "
+                        "If the link is inside a dropdown menu, reply using the format 'Parent > Link' (for example, 'About Us > Our Team'). "
+                        "Otherwise, reply with just the exact visible link text. Ensure the text is accurate and visible on the image page."
                     )
                     nav_reply = send_image_and_prompt_get_reply(driver, chat_handle, tmp_img1, prompt1)
                 finally:
@@ -1454,8 +2028,8 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 except Exception:
                     time.sleep(0.3)
                 link_candidates = get_visible_link_texts(driver, limit=120)
-                if not nav_text or not _nav_text_matches_links(nav_text, link_candidates):
-                    print(f"[gpt] Navigation text not usable for {site}: '{nav_text}'. Candidates: {link_candidates[:8]}")
+                if not nav_text:
+                    print(f"[gpt] Empty navigation reply for {site}")
                     driver.switch_to.window(sheet_handle)
                     enter_sheets_iframe_if_needed(driver, timeout=5)
                     row = find_row_for_site(driver, site)
@@ -1463,10 +2037,57 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                         row = paste_row_at_next_empty(driver, [site, "", "", "", ""])
                     site_row_map[_normalize_site(site)] = row
                     continue
+                # If reply is a breadcrumb like 'Parent > Child', don't require visible match; we'll handle dropdowns.
+                if '>' not in nav_text and not _nav_text_matches_links(nav_text, link_candidates):
+                    print(f"[gpt] Navigation text not visible for {site}: '{nav_text}'. Candidates: {link_candidates[:8]}. Proceeding anyway.")
                 # --- Click/link navigation with robust strategies ---
-                if not navigate_to_suggested_section(driver, nav_text):
+                success = False
+                # If ChatGPT returned a breadcrumb path (e.g., 'Parent > Child'), handle dropdowns explicitly
+                if '>' in nav_text:
+                    parts = [p.strip() for p in nav_text.split('>') if p.strip()]
+                    if len(parts) >= 2:
+                        parent_label = parts[0]
+                        child_label = parts[-1]
+                        # First, try directly navigating via the child's href anywhere on the page
+                        success = _navigate_by_text_via_direct_get(driver, child_label)
+                        if not success:
+                            success = _expand_specific_dropdown_and_navigate(driver, parent_label, child_label)
+                else:
+                    # If GPT returned only a parent label, try to pick the best staff-like child under that parent
+                    if nav_text:
+                        print(f"[nav] Only parent suggested: '{nav_text}'. Trying best staff-like child under this menu...")
+                        if _expand_parent_and_click_best_staff_child(driver, nav_text):
+                            success = True
+                # If not already successful, try direct navigation and generic dropdown expansion
+                if not success:
+                    if navigate_to_suggested_section(driver, nav_text):
+                        success = True
+                    elif _expand_dropdowns_and_try(driver, nav_text):
+                        success = True
+                if not success:
                     raise RuntimeError(f"Could not navigate using suggested link: {nav_text}")
-
+                # Validate that we actually reached a likely staff page; if not, try targeted fallbacks
+                cur = driver.current_url or ""
+                if not _likely_staff_url(cur):
+                    print(f"[nav] Landed on non-staff page ({cur}). Trying targeted staff link fallbacks…")
+                    # 1) If we had a breadcrumb, try direct-get to the child again (sometimes DOM changed)
+                    if '>' in nav_text:
+                        parts = [p.strip() for p in nav_text.split('>') if p.strip()]
+                        if len(parts) >= 2:
+                            child_label = parts[-1]
+                            if _navigate_by_text_via_direct_get(driver, child_label):
+                                success = True
+                                cur = driver.current_url or cur
+                    # 2) If only parent was provided, try best child under that menu
+                    if not success and '>' not in nav_text and nav_text:
+                        if _expand_parent_and_click_best_staff_child(driver, nav_text):
+                            success = True
+                            cur = driver.current_url or cur
+                    # 3) Global best staff-like link anywhere
+                    if not success:
+                        if _navigate_best_staff_link_anywhere(driver):
+                            success = True
+                            cur = driver.current_url or cur
                 # After navigation, handle tabs and confirm we are on the clinic host
                 time.sleep(1.0)
                 expected_host = _host_of(site)
@@ -1474,41 +2095,41 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 if switched:
                     site_handle = switched
                 debug_where(driver, label="after-click")
-
                 # --- Screenshot staff page + ask GPT for CSV (Phone, First, Last, Doctors) ---
                 time.sleep(1.0)
                 debug_where(driver, label="before-second-screenshot (site)")
                 tmp_img2 = save_temp_fullpage_jpeg_screenshot(driver, target_width=1400, jpeg_quality=50)
                 try:
-                    # Start a new chat for the counting prompt (restore previous behavior)
+                    # Start a new chat for the combined prompt
                     open_new_chat(driver, chat_handle)
                     prompt2 = (
                         "You are seeing the clinic's staff/providers page. Using ONLY what is visible in this screenshot, "
-                        "return exactly ONE line in strict CSV format with EXACTLY four fields: \n"
-                        "Phone, First, Last, Doctors\n"
-                        "Rules:\n"
-                        "- Phone: the clinic's phone number if visible on this page; else leave empty.\n"
-                        "- First, Last: the OWNER's first and last names. IF the owner name is not visible, use the FIRST doctor's first and last names instead.\n"
-                        "- Doctors: the number of DOCTORS listed on this page as an INTEGER (exclude non-physician staff).\n"
-                        "Formatting constraints:\n"
-                        "- Output must be a single CSV line with exactly 3 commas (4 fields).\n"
-                        "- If a field is unknown, leave it empty but keep its comma.\n"
-                        "- Do not include labels, extra words, or additional commas.\n"
-                        "Examples (illustrative):\n"
-                        "555-123-4567,Jane,Doe,3\n"
-                        ",John,Smith,2\n"
+                        "return exactly ONE line in strict CSV format: Phone, First, Last, Doctors\n"
+                        "- Phone: the clinic's phone number if visible; else leave empty.\n"
+                        "- First, Last: the clinic OWNER's first and last names if visible; else use the first doctor's name.\n"
+                        "- Doctors: the NUMBER of DOCTORS listed on this page (exclude non-physician staff). This field must be a numeric count with no words.\n"
+                        "Return only the CSV line, with no labels or extra words."
                     )
-                    count_reply = send_image_and_prompt_get_reply(driver, chat_handle, tmp_img2, prompt2)
+                    combined_reply = send_image_and_prompt_get_reply(driver, chat_handle, tmp_img2, prompt2)
                 finally:
                     try:
                         os.remove(tmp_img2)
                     except Exception:
                         pass
                 # Parse combined CSV reply: Phone, First, Last, Doctors
-                phone, first, last, doctor_count = parse_comma_reply(count_reply or "")
+                phone, first, last, doctor_count = parse_comma_reply(combined_reply or "")
                 # doctor_count already normalized to leading integer by parse_comma_reply
-                print(f"[gpt] Parsed CSV for {site}: phone='{phone}', first='{first}', last='{last}', doctors='{doctor_count}'")
-
+                is_numeric = bool(re.match(r"^\d+$", doctor_count))
+                if not is_numeric:
+                    # Do NOT close the site tab; we failed to get a count. Log and continue.
+                    print(f"[gpt] No numeric doctor count returned for {site}. Keeping tab open for manual retry.")
+                    driver.switch_to.window(sheet_handle)
+                    enter_sheets_iframe_if_needed(driver, timeout=5)
+                    row = find_row_for_site(driver, site)
+                    if row is None:
+                        row = paste_row_at_next_empty(driver, [site, "", "", "", ""])
+                    site_row_map[_normalize_site(site)] = row
+                    continue
                 # --- Close only the site tab, never ChatGPT/Sheets ---
                 try:
                     if site_handle in driver.window_handles and site_handle not in (sheet_handle, chat_handle):
@@ -1517,7 +2138,6 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                 except Exception:
                     pass
                 driver.switch_to.window(sheet_handle)
-
                 # Record the result.  Fill phone and owner fields if we got them.
                 enter_sheets_iframe_if_needed(driver, timeout=5)
                 key = _normalize_site(site)
@@ -1536,9 +2156,9 @@ def monitor_loop(sheet_url: str = SHEET_URL) -> None:
                     row = paste_row_at_next_empty(driver, [site, "", "", "", ""])
                 site_row_map[_normalize_site(site)] = row
                 continue
-
         # Small delay before rescanning
         time.sleep(0.4)
+
 
 if __name__ == "__main__":
     monitor_loop()
