@@ -66,9 +66,23 @@ def build_nav_prompt(link_texts: list[str] | None = None) -> str:
 def build_staff_csv_prompt() -> str:
     return (
         "You are seeing the clinic's staff/providers page. Using ONLY what is visible in this screenshot, "
-        "return exactly ONE line in strict CSV format: Phone, First, Last, Doctors\n"
-        "- Phone: the clinic's phone number if visible (generally in the very top information bar); else leave empty.\n"
+        "return exactly ONE line in strict CSV format: First, Last, Doctors\n"
+        "\n"
         "- First, Last: the clinic OWNER's first and last names if visible; else use the first doctor's name.\n"
         "- Doctors: the NUMBER of DOCTORS listed on this page (exclude non-physician staff). This field must be a numeric count with no words.\n"
         "Return only the CSV line, with no labels or extra words."
     )
+
+
+def parse_owner_doctors_reply(reply: str) -> tuple[str, str, str]:
+    """Parse 'First, Last, Doctors' returning (first,last,doctors)."""
+    s2 = _strip_fences_and_ws(reply).replace("\n", " ").replace("  ", " ")
+    parts = [_clean_piece(x) for x in s2.split(",")]
+    while len(parts) < 3:
+        parts.append("")
+    first, last, doctors = parts[:3]
+    import re as _re
+    m = _re.search(r"\d+", doctors or "")
+    if m:
+        doctors = m.group(0)
+    return first, last, doctors

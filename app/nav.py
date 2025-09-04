@@ -5,6 +5,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
+from app.utils import _host_of
 
 
 def _open_hamburger_if_present(driver: webdriver.Chrome) -> None:
@@ -50,8 +51,11 @@ def _likely_staff_url(u: str) -> bool:
     u = (u or "").lower()
     if not u:
         return False
+    # Exclude career/join pages that often contain misleading keywords
+    if _is_career_or_nonstaff(u):
+        return False
     strong = [
-        "our-team","team","providers","provider","doctors","physicians","veterinarians","vets","our-doctors","meet-the-team","meet-our-team",
+        "our-team","team","providers","provider","doctors","physicians","veterinarians","vets","our-doctors","meet-the-team","meet-our-team","our-veterinarians","our-staff","medical-team",
     ]
     if any(k in u for k in strong):
         return True
@@ -96,6 +100,14 @@ def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bo
             try:
                 if not el.is_displayed():
                     continue
+                # Skip career/join links
+                try:
+                    href_l = (el.get_attribute('href') or '').strip().lower()
+                except Exception:
+                    href_l = ''
+                txt_l = (el.text or '').strip().lower()
+                if _is_career_or_nonstaff(txt_l) or _is_career_or_nonstaff(href_l):
+                    continue
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
                 try:
                     el.click()
@@ -113,7 +125,7 @@ def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bo
         for a in heuristic:
             try:
                 href = a.get_attribute('href') or ''
-                if _likely_staff_url(href) and a.is_displayed():
+                if (_likely_staff_url(href) and a.is_displayed() and not _is_career_or_nonstaff(href)):
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", a)
                     try:
                         a.click()
@@ -123,6 +135,28 @@ def navigate_to_suggested_section(driver: webdriver.Chrome, nav_text: str) -> bo
                         return True
             except Exception:
                 continue
+        # Fallback: use JS to fetch all hrefs and navigate directly to the best staff-like href
+        try:
+            hrefs = driver.execute_script("return Array.from(document.querySelectorAll('a[href]')).map(a=>a.href);") or []
+        except Exception:
+            hrefs = []
+        best, score = None, 0
+        for h in hrefs:
+            if _is_career_or_nonstaff(h):
+                continue
+            sc = 0
+            if _likely_staff_url(h): sc += 100
+            for k, w in (("/veterinarians", 50),("/our-veterinarians", 60),("/our-doctors", 45),("/providers", 40),("/team", 35),("/our-team", 45),("/staff", 30)):
+                if k in (h or '').lower(): sc += w
+            if sc > score:
+                best, score = h, sc
+        if best and score >= 100:
+            try:
+                driver.get(best)
+                if _wait_for_navigation(driver, start_url, timeout=8.0):
+                    return True
+            except Exception:
+                pass
     except Exception:
         pass
     return False
@@ -282,6 +316,7 @@ def _navigate_by_text_via_direct_get(driver: webdriver.Chrome, anchor_text: str)
         if target.lower() in text.lower() or text.lower() in target.lower(): s += 20
         s += _score_staff_label(text)
         if _likely_staff_url(href): s += 80
+        if _is_career_or_nonstaff(text) or _is_career_or_nonstaff(href): s -= 200
         return s
     best, best_score = None, 0
     for a in anchors:
@@ -313,15 +348,16 @@ def _score_staff_label(label: str) -> int:
     for k, s in scores:
         if k in l:
             score = max(score, s)
+    # Penalize non-staff pages that contain misleading keywords
+    if _is_career_or_nonstaff(l):
+        score -= 120
     return score
 
 
 def _navigate_best_staff_link_anywhere(driver: webdriver.Chrome) -> bool:
     start_url = driver.current_url or ""
-    try:
-        anchors = driver.find_elements(By.XPATH, "//a[@href]")
-    except Exception:
-        anchors = []
+    cur_host = _host_of(start_url)
+
     def _score_any(a) -> int:
         try:
             text = (a.text or "").strip()
@@ -333,13 +369,31 @@ def _navigate_best_staff_link_anywhere(driver: webdriver.Chrome) -> bool:
         s = 0
         s += _score_staff_label(text)
         if _likely_staff_url(href): s += 100
+        if _is_career_or_nonstaff(text) or _is_career_or_nonstaff(href): s -= 200
+        # prefer same-host links slightly
+        try:
+            if cur_host and _host_of(href).endswith(cur_host):
+                s += 10
+        except Exception:
+            pass
         s -= min(len(href), 200) // 50
         return s
+
+    # Pass 1: DOM anchors (up to 2 small retries to allow menus to render)
     best, best_score = None, 0
-    for a in anchors:
-        sc = _score_any(a)
-        if sc > best_score:
-            best, best_score = a, sc
+    for _ in range(3):
+        try:
+            anchors = driver.find_elements(By.XPATH, "//a[@href]")
+        except Exception:
+            anchors = []
+        for a in anchors:
+            sc = _score_any(a)
+            if sc > best_score:
+                best, best_score = a, sc
+        if best_score >= 90:
+            break
+        time.sleep(0.3)
+
     if best and best_score >= 90:
         href = best.get_attribute('href') or ''
         if href:
@@ -349,7 +403,84 @@ def _navigate_best_staff_link_anywhere(driver: webdriver.Chrome) -> bool:
                     return True
             except Exception:
                 pass
+
+    # Pass 2: JS-queried hrefs (absolute URLs), in case anchors are hidden/not attached
+    try:
+        hrefs = driver.execute_script("return Array.from(document.querySelectorAll('a[href]')).map(a=>a.href);") or []
+    except Exception:
+        hrefs = []
+
+    def _score_href_only(href: str) -> int:
+        if not href or href.startswith('#') or href.lower().startswith('javascript:'):
+            return -1
+        s = 0
+        if _likely_staff_url(href): s += 100
+        # Prefer slugs that are especially relevant
+        for k, w in (("/veterinarians", 50),("/our-veterinarians", 60),("/our-doctors", 45),("/providers", 40),("/team", 35),("/our-team", 45),("/staff", 30)):
+            if k in href.lower():
+                s += w
+        if _is_career_or_nonstaff(href): s -= 220
+        try:
+            if cur_host and _host_of(href).endswith(cur_host):
+                s += 10
+        except Exception:
+            pass
+        s -= min(len(href), 200) // 50
+        return s
+
+    best_href, best_href_score = None, 0
+    for h in hrefs:
+        sc = _score_href_only(h)
+        if sc > best_href_score:
+            best_href, best_href_score = h, sc
+    if best_href and best_href_score >= 100:
+        try:
+            driver.get(best_href)
+            if _wait_for_navigation(driver, start_url, timeout=8.0):
+                return True
+        except Exception:
+            pass
     return False
+
+
+def find_best_staff_href(driver: webdriver.Chrome) -> str | None:
+    """Return the single best staff-like absolute href found anywhere on the page.
+
+    Uses similar scoring as navigation helpers; excludes career/join/apply links.
+    """
+    try:
+        cur_host = _host_of(driver.current_url or "")
+    except Exception:
+        cur_host = ""
+    try:
+        hrefs = driver.execute_script("return Array.from(document.querySelectorAll('a[href]')).map(a=>a.href);") or []
+    except Exception:
+        hrefs = []
+
+    def _score_href_only(href: str) -> int:
+        if not href or href.startswith('#') or href.lower().startswith('javascript:'):
+            return -1
+        s = 0
+        hl = (href or '').lower()
+        if _likely_staff_url(hl): s += 100
+        for k, w in (("/veterinarians", 60),("/our-veterinarians", 70),("/our-doctors", 55),("/providers", 45),("/team", 40),("/our-team", 50),("/staff", 35)):
+            if k in hl:
+                s += w
+        if _is_career_or_nonstaff(hl): s -= 220
+        try:
+            if cur_host and _host_of(href).endswith(cur_host):
+                s += 10
+        except Exception:
+            pass
+        s -= min(len(href), 200) // 50
+        return s
+
+    best, best_score = None, 0
+    for h in hrefs:
+        sc = _score_href_only(h)
+        if sc > best_score:
+            best, best_score = h, sc
+    return best if best_score >= 100 else None
 
 
 def _expand_parent_and_click_best_staff_child(driver: webdriver.Chrome, parent_text: str) -> bool:
@@ -411,3 +542,153 @@ def _expand_parent_and_click_best_staff_child(driver: webdriver.Chrome, parent_t
         except Exception:
             continue
     return False
+
+
+def page_looks_like_staff_listing(driver: webdriver.Chrome) -> bool:
+    """Heuristically detect if the current page already shows a staff/providers section.
+
+    This catches homepages that list the team inline (no navigation needed).
+    The heuristic looks for:
+      - Headings containing team/doctor/provider keywords
+      - Body text containing multiple person/role tokens (e.g., Dr., DVM, Veterinarian)
+      - Multiple images/alts with doctor/vet tokens
+      - Containers with id/class including team/provider/doctor/staff having meaningful text
+    """
+    try:
+        from selenium.webdriver.common.by import By
+    except Exception:
+        return False
+
+    try:
+        # Quick heading keyword match
+        heading_keywords = [
+            "our team", "team", "providers", "our providers",
+            "doctors", "physicians", "veterinarians", "veterinarian",
+            "staff", "meet the team", "meet our team", "our veterinarians", "our doctors", "medical team",
+        ]
+        try:
+            headings = driver.find_elements(By.XPATH, "//h1 | //h2 | //h3 | //h4 | //h5 | //h6")
+        except Exception:
+            headings = []
+        for h in headings:
+            try:
+                if not h.is_displayed():
+                    continue
+                t = (h.text or "").strip().lower()
+                if not t:
+                    continue
+                # Ignore career-oriented headings like "Join our team" to avoid false positives
+                if any(k in t for k in heading_keywords):
+                    if any(bad in t for bad in ("join", "career", "hiring", "employment", "job", "opportunit", "apply")):
+                        continue
+                    return True
+            except Exception:
+                continue
+
+        # Aggregate body text once for token counting
+        try:
+            body_el = driver.find_element(By.TAG_NAME, "body")
+            body_text = (body_el.text or "").lower()
+        except Exception:
+            body_text = ""
+
+        # Count person/role tokens across the page
+        tokens = [
+            "dr.", "dr ", "doctor ", "dvm", "vmd", "md", "dds", "dmd", "bvsc",
+            "veterinarian", "veterinary", "physician", "provider",
+            "practice manager", "hospital manager", "owner", "co-owner",
+        ]
+        token_hits = 0
+        if body_text:
+            for tok in tokens:
+                # Count occurrences up to a cap to prevent huge pages over-weighting
+                cnt = body_text.count(tok)
+                token_hits += min(cnt, 5)
+
+        # Images/alts suggesting doctor/provider cards
+        img_hits = 0
+        try:
+            imgs = driver.find_elements(By.XPATH, "//img[@alt or @title]")
+        except Exception:
+            imgs = []
+        for img in imgs:
+            try:
+                if not img.is_displayed():
+                    continue
+                alt = ((img.get_attribute('alt') or '') + ' ' + (img.get_attribute('title') or '')).lower()
+                if any(k in alt for k in ["dr", "dvm", "vmd", "doctor", "veterinarian", "provider", "our team", "team"]):
+                    img_hits += 1
+                    if img_hits >= 3:
+                        break
+            except Exception:
+                continue
+
+        # Containers with suggestive id/class having non-trivial text
+        container_hits = 0
+        try:
+            containers = driver.find_elements(
+                By.XPATH,
+                "//*[contains(translate(@id,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'team') or "
+                "contains(translate(@id,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'provider') or "
+                "contains(translate(@id,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'doctor') or "
+                "contains(translate(@id,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'staff') or "
+                "contains(translate(@class,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'team') or "
+                "contains(translate(@class,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'provider') or "
+                "contains(translate(@class,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'doctor') or "
+                "contains(translate(@class,'TEAMPROVIDERDOCTORSTAFF','teamproviderdoctorstaff'),'staff')]"
+            )
+        except Exception:
+            containers = []
+        for c in containers[:20]:
+            try:
+                if not c.is_displayed():
+                    continue
+                t = (c.text or "").strip()
+                # Skip containers that are obviously career-oriented
+                tl = t.lower()
+                if _is_career_or_nonstaff(tl):
+                    continue
+                if len(t) >= 40:  # likely a real block with content
+                    container_hits += 1
+                    if container_hits >= 2:
+                        break
+            except Exception:
+                continue
+
+        # Simple score aggregation
+        score = 0
+        if token_hits >= 3:
+            score += 2
+        if img_hits >= 2:
+            score += 2
+        if container_hits >= 1:
+            score += 2
+        # Extra boost if very keyword-y body text
+        if body_text and any(k in body_text for k in ["meet the team", "our team", "our providers", "our doctors"]):
+            score += 2
+
+        # Penalize career/join related content on the page to reduce false positives
+        neg_hits = 0
+        for tok in ("career", "careers", "employment", "job", "jobs", "hiring", "apply", "application", "opportunit", "join our team", "join-our-team", "work with us", "work-with-us"):
+            if body_text and tok in body_text:
+                neg_hits += 1
+        if neg_hits >= 2:
+            score -= 4
+
+        return score >= 3
+    except Exception:
+        return False
+
+
+def _is_career_or_nonstaff(s: str) -> bool:
+    """Return True if the string clearly refers to careers/join/apply type pages."""
+    if not s:
+        return False
+    t = s.strip().lower()
+    if not t:
+        return False
+    bad = (
+        "career", "careers", "employment", "job", "jobs", "hiring", "apply", "application", "opportunit",
+        "join our team", "join-our-team", "work with us", "work-with-us", "volunteer", "internship", "residency", "fellowship",
+    )
+    return any(b in t for b in bad)

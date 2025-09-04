@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data Scraper – Sheet Setup</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Connect Your Google Sheet</h1>
+    <p class="subtitle">Provide your Google Sheets link to start scraping and writing results.</p>
+
+    <div class="card">
+      <form id="sheet-form">
+        <label for="sheet_url">Google Sheets link</label>
+        <input id="sheet_url" name="sheet_url" type="url" placeholder="https://docs.google.com/spreadsheets/d/…/edit" required />
+        <p class="hint">
+          Ensure <strong>integrusautomation@gmail.com</strong> has <strong>edit</strong> access to this sheet.
+        </p>
+        <button type="submit">Start</button>
+        <div id="form-error" class="error" style="display:none"></div>
+      </form>
+    </div>
+
+    <div id="progress-area" class="card" style="display:none">
+      <div class="progress-header">
+        <div class="progress-title">Starting automation…</div>
+        <div class="progress-status" id="status-text">Checking access</div>
+      </div>
+      <div class="progress-bar"><div id="progress-fill" class="progress-fill" style="width: 0%"></div></div>
+
+      <div class="controls">
+        <button id="btn-pause" class="secondary">Pause</button>
+        <button id="btn-resume" class="secondary" style="display:none">Resume</button>
+        <button id="btn-stop" class="danger">Stop</button>
+      </div>
+
+      <div id="success" class="success" style="display:none">Automation running. You can now add websites to your sheet.</div>
+      <div id="error" class="error" style="display:none"></div>
+
+      <div class="stats">
+        <div><strong>Batch:</strong> <span id="stat-batch">0 / 80</span></div>
+        <div><strong>Total Completed:</strong> <span id="stat-total">0</span></div>
+        <div><strong>Errors:</strong> <span id="stat-errors">0</span></div>
+        <div id="cooldown" style="display:none"><strong>Cooldown:</strong> <span id="cooldown-remaining">00:00:00</span></div>
+      </div>
+
+      <div class="log">
+        <div class="log-title">Activity</div>
+        <pre id="log"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      window.ScraperUI && window.ScraperUI.init();
+    });
+  </script>
+</body>
+</html>

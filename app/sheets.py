@@ -208,3 +208,83 @@ def paste_row_at_next_empty(driver: webdriver.Chrome, values: list[str]) -> int:
     paste_row_into_row(driver, row, values)
     return row
 
+
+
+def find_row_for_site(driver: webdriver.Chrome, col_letter: str, site: str) -> int | None:
+    """Return 1-based row index in column `col_letter` whose value matches the site (normalized)."""
+    vals = get_col_values(driver, col_letter)
+    from app.utils import normalize_site
+    target = normalize_site(site)
+    row_idx = 0
+    for i, v in enumerate(vals, start=1):
+        if normalize_site(v) == target:
+            row_idx = i
+            break
+    return row_idx or None
+
+
+def set_cell_value(driver: webdriver.Chrome, col_letter: str, row: int, value: str) -> None:
+    """Set a single cell value using grid paste semantics (never typing in the Name box or Formula bar).
+
+    Flow:
+    - Jump selection to the cell via Name box (goto_cell).
+    - Ensure nothing editable (Name box / Formula bar) has focus (ESC + blur).
+    - If empty value: issue Delete on the selected cell.
+    - Else: clipboard copy value, then Cmd/Ctrl+V to paste directly into the grid.
+    - Press Enter to commit.
+    """
+    goto_cell(driver, f"{col_letter}{row}")
+
+    # Exit any input (name box / formula bar) so the grid owns the next keystrokes
+    try:
+        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+    try:
+        driver.execute_script("document.activeElement && document.activeElement.blur && document.activeElement.blur();")
+    except Exception:
+        pass
+
+    # If clearing, just hit Delete on the selected cell and commit
+    if value is None or str(value) == "":
+        try:
+            ActionChains(driver).send_keys(Keys.DELETE).perform()
+            ActionChains(driver).send_keys(Keys.ENTER).perform()
+        except Exception:
+            pass
+        time.sleep(0.03)
+        return
+
+    # Paste the value directly into the grid
+    import pyperclip
+    pyperclip.copy(str(value))
+    pasted = False
+    try:
+        ActionChains(driver).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform(); pasted = True
+    except Exception:
+        try:
+            ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform(); pasted = True
+        except Exception:
+            pasted = False
+    if not pasted:
+        try:
+            # Fallback: type as text and commit
+            ActionChains(driver).send_keys(str(value)).perform()
+        except Exception:
+            pass
+    try:
+        ActionChains(driver).send_keys(Keys.ENTER).perform()
+    except Exception:
+        pass
+    time.sleep(0.03)
+
+
+def ensure_column_header(driver: webdriver.Chrome, col_letter: str, header_text: str) -> None:
+    """Set header in row 1 for a given column if empty or different."""
+    enter_sheets_iframe_if_needed(driver, timeout=5)
+    try:
+        current = read_cell(driver, f"{col_letter}1")
+    except Exception:
+        current = ""
+    if (current or "").strip() != (header_text or "").strip():
+        set_cell_value(driver, col_letter, 1, header_text)

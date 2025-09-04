@@ -15,18 +15,41 @@ def _host_of(url: str) -> str:
 
 def switch_to_site_tab_by_host(driver: webdriver.Chrome, expected_host: str, fallback_handle: str | None = None) -> str | None:
     expected = (expected_host or "").lower()
+    # 1) Prefer the provided fallback handle if it matches the expected host
+    if fallback_handle and fallback_handle in driver.window_handles:
+        try:
+            driver.switch_to.window(fallback_handle)
+            cur = (driver.current_url or "").strip()
+            host = _host_of(cur).lower()
+            if host == expected or (expected and (host.endswith("." + expected) or expected.endswith("." + host))):
+                return fallback_handle
+        except Exception:
+            pass
+    # 2) Otherwise, choose the best-matching handle among all windows.
+    # Prefer the one with the longest URL (likely a deeper path like /veterinarians/ over homepage).
+    best_h = None
+    best_score = -1
     for h in driver.window_handles:
         try:
             driver.switch_to.window(h)
             cur = (driver.current_url or "").strip()
             host = _host_of(cur).lower()
-            if host == expected or (expected and host.endswith("." + expected)):
-                return h
+            if host == expected or (expected and (host.endswith("." + expected) or expected.endswith("." + host))):
+                sc = len(cur)
+                if sc > best_score:
+                    best_h, best_score = h, sc
         except Exception:
             continue
+    if best_h:
+        driver.switch_to.window(best_h)
+        return best_h
+    # 3) Fall back to the provided handle even if host check failed (last resort)
     if fallback_handle and fallback_handle in driver.window_handles:
-        driver.switch_to.window(fallback_handle)
-        return fallback_handle
+        try:
+            driver.switch_to.window(fallback_handle)
+            return fallback_handle
+        except Exception:
+            pass
     return None
 
 
@@ -93,3 +116,16 @@ def _nav_text_matches_links(nav_text: str, links: list[str]) -> bool:
             return True
     return False
 
+
+
+def normalize_site(u: str) -> str:
+    """Normalize a website URL for comparison (scheme+host+path without trailing slash)."""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse((u or '').strip())
+        host = (p.hostname or '').lower()
+        path = (p.path or '/').rstrip('/') or '/'
+        scheme = (p.scheme or 'http').lower()
+        return f"{scheme}://{host}{path}"
+    except Exception:
+        return (u or '').strip().rstrip('/')

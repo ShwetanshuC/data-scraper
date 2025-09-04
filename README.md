@@ -37,6 +37,16 @@ Option B — Manual
 3. Put clinic websites in column `Z` of the Sheet.
 4. `python3 windowsautomation.py`
 
+Option C — Web UI
+
+1. Start Chrome with remote debugging (same as above).
+2. `pip install -r requirements.txt`
+3. `python3 server.py`
+4. Open `http://127.0.0.1:5000` in your browser.
+5. Paste your Google Sheets link and click Start. Make sure `integrusautomation@gmail.com` has edit access.
+   - The UI performs a reversible edit-access check on cell `ZZ1000` (writes a token and immediately clears it).
+   - On success, the automation starts and logs progress. Add websites to the sheet to begin scraping.
+
 ## Notes
 - The orchestrator keeps the Sheet tab focused for reads/writes, opens each site in its own tab, and uses ChatGPT in a separate tab.
 - Dropdown menus are handled via targeted expansion or direct‑href when available.
