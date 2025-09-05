@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 
 from flask import Flask, request, jsonify, render_template
 from pathlib import Path
+import os
 
 from t import attach
 from selenium.common.exceptions import WebDriverException
@@ -307,6 +308,9 @@ def start_monitor_thread(job: Job) -> None:
                 }
 
             monitor_loop(sheet_url=job.sheet_url, progress_cb=progress_cb, driver=d, control=control_hooks())
+            # If monitor_loop returns, it finished all tabs
+            job.set(status="completed", progress=100)
+            job.add_log("All tabs completed.")
         except Exception as e:
             job.set(status="error", error=str(e))
 
@@ -330,6 +334,29 @@ def index():
 @app.get("/_healthz")
 def healthz():
     return {"ok": True}
+
+
+@app.get("/_paths")
+def paths():
+    import os
+    return {
+        "template_dir": _TPL_DIR,
+        "template_exists": os.path.exists(_TPL_DIR),
+        "index_exists": os.path.exists(f"{_TPL_DIR}/index.html"),
+        "static_dir": _STATIC_DIR,
+        "static_exists": os.path.exists(_STATIC_DIR),
+        "style_exists": os.path.exists(f"{_STATIC_DIR}/style.css"),
+        "appjs_exists": os.path.exists(f"{_STATIC_DIR}/app.js"),
+    }
+
+
+@app.get("/_source")
+def source():
+    try:
+        with open(f"{_TPL_DIR}/index.html", "r", encoding="utf-8") as f:
+            return app.response_class(f.read(), mimetype="text/plain")
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 
 @app.post("/start")
@@ -437,7 +464,8 @@ def stop(job_id: str):
 
 def main():
     # Run on localhost by default
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    debug = bool(int(os.environ.get("SCRAPER_DEBUG", "0")))
+    app.run(host="127.0.0.1", port=5000, debug=debug)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ window.ScraperUI = (function () {
       // Update progress and title
       setProgress(data.progress || 0, st === 'cooldown' ? 'Cooling down…' : st.charAt(0).toUpperCase() + st.slice(1));
       if (st === 'running') setSuccess('Automation running. You can now add websites to your sheet.');
+      if (st === 'completed') { setSuccess('All tabs processed successfully.'); clearInterval(pollTimer); pollTimer = null; }
       if (st === 'error') { setError(data.error || 'Error'); }
       // Update stats
       sel('#stat-batch').textContent = `${stats.batch_completed || 0} / ${stats.batch_limit || 80}`;

@@ -197,6 +197,23 @@ def upload_image_to_chatgpt(driver: webdriver.Chrome, image_path: str, timeout: 
         pass
 
 
+def _wait_send_button_enabled(driver: webdriver.Chrome, timeout: float = 20.0) -> bool:
+    end = time.time() + timeout
+    btn = None
+    while time.time() < end:
+        try:
+            btn = chat._find_send_button(driver)
+            if btn and btn.is_displayed():
+                aria = (btn.get_attribute('aria-disabled') or '').strip().lower()
+                disabled = (aria == 'true') or (not btn.is_enabled())
+                if not disabled:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.2)
+    return False
+
+
 def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, image_path: str, prompt: str) -> str:
     """Switch to ChatGPT, upload image via file input, paste prompt, send, and return reply text."""
     driver.switch_to.window(chat_handle)
@@ -212,6 +229,8 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
     upload_image_to_chatgpt(driver, image_path)
     time.sleep(0.25)
     _hide_camera_tile_in_composer(driver)
+    # Wait until image finishes processing and the Send button becomes enabled
+    _wait_send_button_enabled(driver, timeout=25)
     # Re-find composer
     editor = chat._find_composer(driver, timeout=8) or find_editor(driver, timeout=8)
     if not editor:
@@ -272,7 +291,7 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
             pass
     reply = wait_for_chatgpt_response_via_send_button(
         driver,
-        timeout=30,
+        timeout=12,
         poll_interval=0.25,
         status_callback=None,
         composer_css="textarea[data-testid='prompt-textarea'], div[contenteditable='true'][data-testid='prompt-textarea'], div[contenteditable='true'][role='textbox']",
@@ -282,10 +301,15 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
         chat._send_message(driver, editor)
         reply = wait_for_chatgpt_response_via_send_button(
             driver,
-            timeout=25,
+            timeout=10,
             poll_interval=0.25,
             status_callback=None,
             composer_css="textarea[data-testid='prompt-textarea'], div[contenteditable='true'][data-testid='prompt-textarea'], div[contenteditable='true'][role='textbox']",
             nudge_text='.',
         )
+    # Best-effort cleanup to avoid attachment buildup for the next run
+    try:
+        clear_chatgpt_attachments(driver)
+    except Exception:
+        pass
     return reply or ""

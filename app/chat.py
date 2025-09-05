@@ -187,6 +187,32 @@ def open_new_chat(driver: webdriver.Chrome, chat_handle: str, model_url: str = "
         time.sleep(0.2)
 
 
+def open_fresh_chat(driver: webdriver.Chrome, chat_handle: str, model_url: str = "https://chatgpt.com/?model=gpt-5") -> None:
+    """Guarantee a fresh, empty chat before sending.
+
+    - Clicks New chat or navigates to base model URL.
+    - Waits for composer.
+    - Clears any existing text in the composer and removes stale attachments if any (best effort).
+    """
+    from app.chat_attach import clear_chatgpt_attachments
+    open_new_chat(driver, chat_handle, model_url=model_url)
+    driver.switch_to.window(chat_handle)
+    ed = _find_composer(driver, timeout=6) or find_editor(driver, timeout=6)
+    if ed:
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].focus();", ed)
+        except Exception:
+            pass
+        try:
+            ed.send_keys(Keys.CONTROL, 'a'); ed.send_keys(Keys.DELETE)
+        except Exception:
+            pass
+    try:
+        clear_chatgpt_attachments(driver)
+    except Exception:
+        pass
+
+
 def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: str, response_timeout: float = 20) -> str:
     driver.switch_to.window(chat_handle)
     editor = find_editor(driver, timeout=10)

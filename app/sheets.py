@@ -288,3 +288,172 @@ def ensure_column_header(driver: webdriver.Chrome, col_letter: str, header_text:
         current = ""
     if (current or "").strip() != (header_text or "").strip():
         set_cell_value(driver, col_letter, 1, header_text)
+
+
+# -------- Sheet tabs (bottom bar) helpers --------
+
+def _find_sheet_tab_elements(driver: webdriver.Chrome):
+    """Return a list of candidate tab elements at the bottom bar.
+
+    Uses multiple selectors to be resilient to minor UI changes.
+    Caller is responsible for driver context (default content).
+    """
+    sels = [
+        (By.XPATH, "//div[contains(@class,'docs-sheet-tab') and .//div[contains(@class,'docs-sheet-tab-name')]]"),
+        (By.XPATH, "//*[contains(@class,'docs-sheet-tab-name')]/ancestor::div[contains(@class,'docs-sheet-tab')]"),
+        (By.XPATH, "//*[@role='tab' and (normalize-space(.)!='' or .//*[@class])]")
+    ]
+    for by, sel in sels:
+        try:
+            els = driver.find_elements(by, sel)
+            if els:
+                return els
+        except Exception:
+            continue
+    return []
+
+
+def list_sheet_tab_names(driver: webdriver.Chrome) -> list[str]:
+    """Return visible sheet tab names in order.
+
+    If none are found, returns an empty list, and callers can treat the sheet as single-tab.
+    """
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    tabs = _find_sheet_tab_elements(driver)
+    names: list[str] = []
+    for t in tabs:
+        name = ""
+        try:
+            # Prefer the explicit name container
+            name = (t.find_element(By.XPATH, ".//*[contains(@class,'docs-sheet-tab-name')]").text or "").strip()
+        except Exception:
+            try:
+                name = (t.text or "").strip()
+            except Exception:
+                name = ""
+        if name:
+            names.append(name)
+    # Deduplicate while preserving order
+    seen = set()
+    ordered = []
+    for n in names:
+        if n not in seen:
+            ordered.append(n); seen.add(n)
+    return ordered
+
+
+def select_sheet_tab_by_name(driver: webdriver.Chrome, name: str) -> bool:
+    """Click the sheet tab with the given name. Returns True on success."""
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    tabs = _find_sheet_tab_elements(driver)
+    target = (name or "").strip().lower()
+    for t in tabs:
+        try:
+            nm = ""
+            try:
+                nm = (t.find_element(By.XPATH, ".//*[contains(@class,'docs-sheet-tab-name')]").text or "").strip()
+            except Exception:
+                nm = (t.text or "").strip()
+            if (nm or "").strip().lower() != target:
+                continue
+            driver.execute_script("arguments[0].scrollIntoView({block:'nearest'});", t)
+            try:
+                t.click(); time.sleep(0.2)
+            except Exception:
+                try:
+                    ActionChains(driver).move_to_element(t).click().perform(); time.sleep(0.2)
+                except Exception:
+                    pass
+            # Enter iframe again so grid ops work
+            enter_sheets_iframe_if_needed(driver, timeout=5)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def select_next_sheet_tab(driver: webdriver.Chrome, current_name: str) -> bool:
+    """Activate the tab following the current tab by name. Returns True if switched."""
+    names = list_sheet_tab_names(driver)
+    if not names:
+        return False
+    try:
+        idx = names.index((current_name or "").strip())
+    except ValueError:
+        idx = -1
+    if idx >= 0 and idx + 1 < len(names):
+        return select_sheet_tab_by_name(driver, names[idx + 1])
+    return False
+
+
+# -------- Header detection helpers --------
+
+def _col_index_to_letter(idx1: int) -> str:
+    """Convert 1-based column index to Excel-style letters (A, B, ..., Z, AA, AB, ...)."""
+    n = idx1
+    letters = []
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters.append(chr(ord('A') + rem))
+    return ''.join(reversed(letters))
+
+
+def get_row_values(driver: webdriver.Chrome, row: int) -> list[str]:
+    """Return values of a given row as a list using copy semantics."""
+    enter_sheets_iframe_if_needed(driver, timeout=8)
+    goto_cell(driver, f"A{row}")
+    ActionChains(driver).key_down(Keys.SHIFT).send_keys(Keys.SPACE).key_up(Keys.SHIFT).perform()
+    time.sleep(0.06)
+    ActionChains(driver).key_down(Keys.CONTROL).send_keys('c').key_up(Keys.CONTROL).perform()
+    time.sleep(0.08)
+    raw = pyperclip.paste() or ""
+    # Row copy usually yields a single line with tab-delimited cells
+    first_line = raw.splitlines()[0] if raw else ""
+    return [c.strip() for c in first_line.split("\t")]
+
+
+def detect_header_columns(driver: webdriver.Chrome) -> dict:
+    """Detect important column letters by looking at row 1 headers.
+
+    Returns a mapping with possible keys: website, owner_first, owner_last,
+    owner_name, doctor_count. Values are column letters like 'A', 'K', etc.
+    Missing keys mean header isn't present.
+    """
+    headers = get_row_values(driver, 1)
+    mapping: dict[str, str] = {}
+    norm = [h.strip().lower() for h in headers]
+
+    def find_col(pred) -> int | None:
+        for i, h in enumerate(norm, start=1):
+            try:
+                if pred(h):
+                    return i
+            except Exception:
+                continue
+        return None
+
+    # Website column
+    i = find_col(lambda h: h in ("website", "site", "url") or ("website" in h and len(h) <= 20))
+    if i: mapping['website'] = _col_index_to_letter(i)
+
+    # Owner First/Last or Owner Name
+    i = find_col(lambda h: ("owner" in h and "first" in h) or h in ("owner first", "first name", "owner fname"))
+    if i: mapping['owner_first'] = _col_index_to_letter(i)
+    i = find_col(lambda h: ("owner" in h and "last" in h) or h in ("owner last", "last name", "owner lname", "surname"))
+    if i: mapping['owner_last'] = _col_index_to_letter(i)
+    i = find_col(lambda h: h in ("owner", "owner name", "business owner", "founder") or ("owner" in h and "name" in h))
+    if i: mapping['owner_name'] = _col_index_to_letter(i)
+
+    # Doctor count (also accept providers/veterinarians synonyms)
+    i = find_col(lambda h: ("doctor" in h and ("number" in h or "count" in h)) or h == "doctors"
+                          or ("provider" in h and ("number" in h or "count" in h))
+                          or ("veterinarian" in h and ("number" in h or "count" in h)))
+    if i: mapping['doctor_count'] = _col_index_to_letter(i)
+
+    return mapping

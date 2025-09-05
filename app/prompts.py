@@ -69,6 +69,7 @@ def build_staff_csv_prompt() -> str:
         "return exactly ONE line in strict CSV format: First, Last, Doctors\n"
         "\n"
         "- First, Last: the clinic OWNER's first and last names if visible; else use the first doctor's name.\n"
+        "- If there are MULTIPLE owners, list all owners with matching order using semicolons in each field, e.g.: 'Alice; Bob, Smith; Jones'.\n"
         "- Doctors: the NUMBER of DOCTORS listed on this page (exclude non-physician staff). This field must be a numeric count with no words.\n"
         "Return only the CSV line, with no labels or extra words."
     )
@@ -86,3 +87,24 @@ def parse_owner_doctors_reply(reply: str) -> tuple[str, str, str]:
     if m:
         doctors = m.group(0)
     return first, last, doctors
+
+
+def build_owner_only_prompt() -> str:
+    return (
+        "You are seeing a company's website page (could be Home, About, Team, or similar). "
+        "Using ONLY what is visible in this screenshot, extract the owner/founder name(s) if present. "
+        "Return exactly one CSV line with two fields: First, Last\n"
+        "- If a single full name like 'John Q. Public' is shown, return 'John, Public' (ignore middle names).\n"
+        "- If MULTIPLE owners/founders are clearly shown, list all with matching order using semicolons in each field, e.g.: 'Alice; Bob, Smith; Jones'.\n"
+        "- If no clear owner is visible, return "," (empty fields).\n"
+        "Return only the CSV line."
+    )
+
+
+def parse_owner_only_reply(reply: str) -> tuple[str, str]:
+    s2 = _strip_fences_and_ws(reply).replace("\n", " ").replace("  ", " ")
+    parts = [_clean_piece(x) for x in s2.split(",")]
+    while len(parts) < 2:
+        parts.append("")
+    first, last = parts[:2]
+    return first, last
