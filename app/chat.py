@@ -226,16 +226,48 @@ def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: st
         pass
     pyperclip.copy(prompt)
     pasted = False
+    # Prefer element-targeted paste on Windows; fall back to other methods
     try:
-        ActionChains(driver).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform(); pasted = True
+        editor.send_keys(Keys.CONTROL, 'v'); pasted = True
     except Exception:
         try:
             ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform(); pasted = True
         except Exception:
-            pasted = False
-    if not pasted:
+            try:
+                ActionChains(driver).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform(); pasted = True
+            except Exception:
+                try:
+                    editor.send_keys(prompt); pasted = True
+                except Exception:
+                    pasted = False
+    # Give DOM time to reflect paste
+    time.sleep(0.15)
+    # If composer didn't receive most of the text, inject via JS as a robust fallback
+    try:
+        current = (editor.text or "").strip()
+    except Exception:
+        current = ""
+    if len(current) < max(10, int(len(prompt) * 0.6)):
         try:
-            editor.send_keys(prompt)
+            driver.execute_script(
+                """
+                (function(el, txt){
+                  try{
+                    el.focus();
+                    const isTextarea = el.tagName && el.tagName.toLowerCase() === 'textarea';
+                    if (isTextarea) {
+                      el.value = txt;
+                    } else {
+                      el.textContent = txt;
+                    }
+                    const evt = new InputEvent('input', {bubbles: true, cancelable: true});
+                    el.dispatchEvent(evt);
+                  }catch(e){}
+                })(arguments[0], arguments[1]);
+                """,
+                editor, prompt,
+            )
+            time.sleep(0.05)
         except Exception:
             pass
     try:

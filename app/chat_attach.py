@@ -245,16 +245,20 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
     import pyperclip
     pyperclip.copy(prompt)
     pasted = False
+    # Prefer element-targeted paste on Windows; fall back to other methods
     try:
-        ActionChains(driver).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform(); pasted = True
+        editor.send_keys(Keys.CONTROL, 'v'); pasted = True
     except Exception:
         try:
             ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform(); pasted = True
         except Exception:
             try:
-                editor.send_keys(prompt); pasted = True
+                ActionChains(driver).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform(); pasted = True
             except Exception:
-                pasted = False
+                try:
+                    editor.send_keys(prompt); pasted = True
+                except Exception:
+                    pasted = False
     if not pasted:
         return ""
     # Give the DOM a moment to apply the paste and format bullets
@@ -267,7 +271,21 @@ def send_image_and_prompt_get_reply(driver: webdriver.Chrome, chat_handle: str, 
     if len(current) < max(10, int(len(prompt) * 0.6)):
         try:
             driver.execute_script(
-                "arguments[0].focus(); arguments[0].textContent = arguments[1]; arguments[0].dispatchEvent(new InputEvent('input',{bubbles:true}));",
+                """
+                (function(el, txt){
+                  try{
+                    el.focus();
+                    const isTextarea = el.tagName && el.tagName.toLowerCase() === 'textarea';
+                    if (isTextarea) {
+                      el.value = txt;
+                    } else {
+                      el.textContent = txt;
+                    }
+                    const evt = new InputEvent('input', {bubbles: true, cancelable: true});
+                    el.dispatchEvent(evt);
+                  }catch(e){}
+                })(arguments[0], arguments[1]);
+                """,
                 editor, prompt,
             )
             time.sleep(0.05)
