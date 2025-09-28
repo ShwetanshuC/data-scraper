@@ -51,6 +51,21 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
+# Hardcoded Google Service Account credentials (used if present)
+HARDCODED_SA_INFO = {
+    "type": "service_account",
+    "project_id": "inner-doodad-471616-u5",
+    "private_key_id": "4b6107984cbc9ff65bef6346e43d5151de116a9e",
+    "private_key": """-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDbVyFGBj/Fhcce\n/2eUgZ5ElaqnDE7uaZAOmhRqkRC9WCx8SlyFDP5qyrjyPbIj55GLpPMIT+AARTIl\n7RP8YSeoJJTsGtkA6L4Jd8IzLUUclszkDcinzclXZ393bI7i3EpKZ2uqUcto3nZ6\nqgFRX0NJj8NQLVaOA7LCLbrvmNaQ5fAb/hP4dSiGCkWtThKTREQwatS//uZdQRxN\ntOfrjUFulIClh9/8vuFP6E1BGrsOf9RQkn5ZrXk+uG5WJrV/GREmDg3/Ln6hzxZ1\n5FaQibqtuo/x5L8B3w43YycRYSqkwbIqDRWPOtrQ5d3aKxCRKYw0Xk4sjj/FOYQz\nnS2c7zMnAgMBAAECggEANLE5zRizOUBqFYhF2edJnjBWTssmKyAw+1EIlpFC9Dm6\ndiFnGI+GjyEkTQ2FPhrjXCjEObr2lRoKchICOx8b58jh/dZ1S0KeZKfgf2rgr32K\nuz6Udbt6IwU6GfZ6XQWO01EFDGWZ+Bd5Xv54UpQQFhvzT8+Ue4ln6D4UKnsNEMG6\nU22/SOzGUutF5dza88ZZlESE8pYB0r7EwUovAVYLksDhDSNyidhRPj6evbhunlow\nrr44y75WBJXiapLe+Yuar68DuMxBD44SBsgUAJqJlX36bma7BZvNt1iZO0Cmnjsp\nFLoyj9IqNitc2nYw4VsF4BiLxVxPdMBbDO1d3+XsAQKBgQD9FxiS3x29mB9sHRtA\nA9UeRYnsYCH9Gev5AQXBukAT6r+u/yH78WWl90NmvGy80n6N2VNaUu8zw59aR5Du\nhUxMy+YZ14U8iqkAJRbrSHgGqoDFH5H/10dYw/neKeSz5Z9WzX/p7SYGN/RU1Yuj\nwJ3Xi+ATCeh+cRhnXz+vl117KwKBgQDd3LM/sI9dZ+hdcn7G17z60WndEmqgy6Xt\nL02VWthqP/yP3HBNdEcZrbgzlf5xYEjV7iik56r9oONe+fI9aHUF/WFk8D82MOtD\nw+Pgu92BR8kkovRqJxl50ocxr+kucIlDKxE26tmcREzNmzUYI5qtc/dGGKFBDRun\nBSOPf0N59QKBgEFSe7o0sgVkRP/vhz//fTsh8ZY7vaoIzbnoBKdavf0mArFVEl1n\nkbfDWPckPOCDZ7yO0g+nBiwTGob/n62gY/ASVGJpGO9mTnZGHGM/whLeYPv/yPwC\ngVyswEoSAABajMSnp5Ml7UF/oaVftHngVhzy8jOXxBUWdZkAoXxdkfgfAoGBAIwK\nHd6qvKORzdsGRT2PuYp8Gp1fXYynXtGq1QbcM9RFFU9dLknFhoeP3sA5AkVgKDlY\nvbDxRj4Xis1NaXkXcR5ZxFspRk0Xbbj1ceZNztAmlrEYZryGd48sswdK6R3WDN4n\n1hLbBIadmfkB6e6VsrGfjEpji417D6RKGxsdkmLtAoGBAKlw2pBIlDpDjCFK45le\nV83bPNK/rdUco6lgLff+2kAQoyr6LqRN94++COeOi5h7sYKP2DEy6QRevSNvF2/g\n/BFzMwA22A6bD6PbrXRvhKu0kX5PJizh5SCjk3SR4rv60g6qEYClrxFbVou4YOFt\nieyiI+FuN1eghsogs64MuV78\n-----END PRIVATE KEY-----\n""",
+    "client_email": "w-472-983@inner-doodad-471616-u5.iam.gserviceaccount.com",
+    "client_id": "111286579313776655861",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/w-472-983%40inner-doodad-471616-u5.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+}
+
 # Service account credentials file path
 SERVICE_ACCOUNT_FILE = 'eminent-scanner-462823-i2-ffd1d24c034e.json'
 
@@ -265,6 +280,16 @@ PIPELINE_NAME = None   # Name of the pipeline being processed
 def authenticate_google_sheets():
     """Authenticate with Google Sheets API using service account from app"""
     try:
+        # Try hardcoded credentials first
+        try:
+            if HARDCODED_SA_INFO and HARDCODED_SA_INFO.get("private_key"):
+                creds = Credentials.from_service_account_info(HARDCODED_SA_INFO, scopes=SCOPES)
+                client = gspread.authorize(creds)
+                print("Using hardcoded service account credentials (embedded)")
+                return client
+        except Exception as e:
+            print(f"Hardcoded SA auth failed: {e}")
+
         # Try multiple possible service account file locations
         possible_files = [
             '/Users/aarushchugh/Downloads/inner-doodad-471616-u5-4b6107984cbc.json',
@@ -4408,7 +4433,7 @@ def main(selected_worksheet_ids=None, pipeline_name=None):
         if not spreadsheet_id:
             return
     
-    # Check if we're in pipeline mode
+    # Check if we're in pipeline modes
     pipeline_mode = '--pipeline-mode' in sys.argv
     pipeline_name = None
     
