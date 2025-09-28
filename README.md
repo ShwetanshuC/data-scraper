@@ -22,26 +22,30 @@ Minimal, modular automation that reads clinic sites from a Google Sheet, asks Ch
 ## Run
 Option A — Quick Start
 
-- `bin/run.sh`
+- Windows: `bin\\run.ps1` (PowerShell)
   - Launches Chrome with remote debugging on port 9222
   - Creates `.venv`, installs deps, runs `windowsautomation.py`
   - Env knobs:
     - `CHROME_REMOTE_DEBUG_PORT` (default 9222)
     - `CHROME_REMOTE_PROFILE_DIR` (persist a separate Chrome profile)
+  - Example: `powershell -ExecutionPolicy Bypass -File bin\\run.ps1`
+
+- macOS/Linux: `bin/run.sh`
+  - Same behavior as above for Unix-like systems
 
 Option B — Manual
 
-1. Start Chrome with remote debugging (macOS example):
-   `open -na "Google Chrome" --args --remote-debugging-port=9222`
+1. Start Chrome with remote debugging (Windows example):
+   `chrome.exe --remote-debugging-port=9222`
 2. Open your Google Sheet and ChatGPT in the same Chrome profile.
 3. Put clinic websites in column `Z` of the Sheet.
-4. `python3 windowsautomation.py`
+4. `python windowsautomation.py`
 
 Option C — Web UI
 
-1. Start Chrome with remote debugging (same as above).
+1. Start Chrome with remote debugging (same as above for Windows).
 2. `pip install -r requirements.txt`
-3. `python3 server.py`
+3. `python server.py`
 4. Open `http://127.0.0.1:5000` in your browser.
 5. Paste your Google Sheets link and click Start. Make sure `integrusautomation@gmail.com` has edit access.
    - The UI performs a reversible edit-access check on cell `ZZ1000` (writes a token and immediately clears it).
