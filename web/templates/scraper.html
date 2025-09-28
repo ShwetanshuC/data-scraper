@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Run New Scraper</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .row label { min-width: 130px; }
+    .logbox { height: 320px; overflow:auto; background:#0b1020; color:#d7e1ff; padding:12px; border-radius:6px; }
+    .badge { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: #eef2ff; color:#223; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Run new_scraper.py</h1>
+    <p class="subtitle">Start the scraper with a Google Sheet URL or Spreadsheet ID. Use Pipeline Mode to process all sheets.</p>
+
+    <div class="card">
+      <form id="runner-form">
+        <div class="row">
+          <label for="sheet_input">Sheet URL or ID</label>
+          <input id="sheet_input" name="sheet_input" type="text" placeholder="https://docs.google.com/spreadsheets/d/…/edit or 1AbC…" required />
+        </div>
+        <div class="row">
+          <label for="pipeline_mode">Pipeline Mode</label>
+          <input id="pipeline_mode" name="pipeline_mode" type="checkbox" />
+        </div>
+        <div class="row">
+          <label for="pipeline">Pipeline Name</label>
+          <input id="pipeline" name="pipeline" type="text" placeholder="e.g. property_management" />
+        </div>
+        <div class="row">
+          <label for="selected_worksheets">Selected Worksheets</label>
+          <input id="selected_worksheets" name="selected_worksheets" type="text" placeholder="Comma-separated worksheet IDs or names (optional)" />
+        </div>
+
+        <div class="row">
+          <button type="submit">Run Scraper</button>
+          <a class="secondary" href="/">Back</a>
+          <span id="status-badge" class="badge" style="display:none"></span>
+        </div>
+        <div id="form-error" class="error" style="display:none"></div>
+      </form>
+    </div>
+
+    <div id="job-area" class="card" style="display:none">
+      <div class="progress-header">
+        <div class="progress-title">Scraper Output</div>
+        <div class="progress-status" id="job-status">Starting…</div>
+      </div>
+      <div class="progress-bar"><div id="job-progress" class="progress-fill" style="width: 0%"></div></div>
+
+      <div class="controls">
+        <button id="btn-stop-job" class="danger" style="display:none">Stop</button>
+      </div>
+
+      <div class="log">
+        <div class="log-title">Logs</div>
+        <pre id="job-log" class="logbox mono"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const $ = (q) => document.querySelector(q);
+      let jobId = null;
+      let pollTimer = null;
+
+      function setBadge(status) {
+        const b = $('#status-badge');
+        if (!b) return;
+        if (!status) { b.style.display = 'none'; return; }
+        b.style.display = 'inline-block';
+        b.textContent = status.toUpperCase();
+      }
+
+      function setProgressPct(p) {
+        const bar = $('#job-progress');
+        if (bar) bar.style.width = `${p}%`;
+      }
+
+      function renderLog(lines) {
+        const el = $('#job-log');
+        if (!el) return;
+        el.textContent = (lines || []).join('\n');
+        el.scrollTop = el.scrollHeight;
+      }
+
+      async function poll() {
+        if (!jobId) return;
+        try {
+          const r = await fetch(`/scraper/status/${jobId}`);
+          if (!r.ok) throw new Error('status');
+          const data = await r.json();
+          $('#job-area').style.display = 'block';
+          $('#job-status').textContent = data.status || '';
+          setBadge(data.status);
+          // naive progress: running=50, completed=100, error/stopped=0
+          let pct = 0;
+          if (data.status === 'running') pct = 50;
+          else if (data.status === 'completed') pct = 100;
+          else if (data.status === 'error') pct = 0;
+          else if (data.status === 'stopped') pct = 0;
+          setProgressPct(pct);
+          renderLog(data.log || []);
+          $('#btn-stop-job').style.display = (data.status === 'running') ? 'inline-block' : 'none';
+          if (['completed','error','stopped'].includes(data.status)) { clearInterval(pollTimer); pollTimer = null; }
+        } catch (e) {
+          // keep polling on transient errors
+        }
+      }
+
+      async function startJob(e) {
+        e.preventDefault();
+        $('#form-error').style.display = 'none';
+        const payload = {
+          sheet_input: $('#sheet_input').value.trim(),
+          pipeline_mode: $('#pipeline_mode').checked,
+          pipeline: $('#pipeline').value.trim(),
+          selected_worksheets: $('#selected_worksheets').value.trim()
+        };
+        try {
+          const r = await fetch('/scraper/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          const data = await r.json();
+          if (!r.ok) {
+            $('#form-error').textContent = data.error || 'Failed to start';
+            $('#form-error').style.display = 'block';
+            return;
+          }
+          jobId = data.job_id;
+          setBadge('running');
+          $('#job-area').style.display = 'block';
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(poll, 1000);
+          poll();
+        } catch (e) {
+          $('#form-error').textContent = 'Network error. Please try again.';
+          $('#form-error').style.display = 'block';
+        }
+      }
+
+      async function stopJob() {
+        if (!jobId) return;
+        try { await fetch(`/scraper/stop/${jobId}`, { method: 'POST' }); poll(); } catch {}
+      }
+
+      document.addEventListener('DOMContentLoaded', function(){
+        const form = document.getElementById('runner-form');
+        form && form.addEventListener('submit', startJob);
+        const stopBtn = document.getElementById('btn-stop-job');
+        stopBtn && stopBtn.addEventListener('click', stopJob);
+      });
+    })();
+  </script>
+</body>
+</html>
+
+

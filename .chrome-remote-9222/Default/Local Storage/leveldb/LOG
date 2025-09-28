@@ -1,0 +1,45 @@
+2025/09/28-13:58:47.709 3d65e7 Reusing MANIFEST /Users/aarushchugh/data-scraper/.chrome-remote-9222/Default/Local Storage/leveldb/MANIFEST-000001
+2025/09/28-13:58:47.717 3d65e7 Recovering log #23
+2025/09/28-13:58:47.720 3d65e7 Reusing old log /Users/aarushchugh/data-scraper/.chrome-remote-9222/Default/Local Storage/leveldb/000023.log 
+2025/09/28-13:59:47.736 3d65eb Level-0 table #26: started
+2025/09/28-13:59:47.739 3d65eb Level-0 table #26: 22196 bytes OK
+2025/09/28-13:59:47.742 3d65eb Delete type=0 #23
+2025/09/28-13:59:47.745 3d65eb Compacting 4@0 + 1@1 files
+2025/09/28-13:59:47.749 3d65eb Generated table #27@0: 124 keys, 107885 bytes
+2025/09/28-13:59:47.750 3d65eb Compacted 4@0 + 1@1 files => 107885 bytes
+2025/09/28-13:59:47.751 3d65eb compacted to: files[ 0 1 1 0 0 0 0 ]
+2025/09/28-13:59:47.751 3d65eb Delete type=2 #16
+2025/09/28-13:59:47.751 3d65eb Delete type=2 #20
+2025/09/28-13:59:47.751 3d65eb Delete type=2 #22
+2025/09/28-13:59:47.752 3d65eb Delete type=2 #26
+2025/09/28-13:59:47.752 3d65eb Delete type=2 #18
+2025/09/28-14:05:13.595 3d65eb Level-0 table #29: started
+2025/09/28-14:05:13.598 3d65eb Level-0 table #29: 18903 bytes OK
+2025/09/28-14:05:13.601 3d65eb Delete type=0 #25
+2025/09/28-14:08:13.600 3d65e7 Level-0 table #31: started
+2025/09/28-14:08:13.605 3d65e7 Level-0 table #31: 18089 bytes OK
+2025/09/28-14:08:13.607 3d65e7 Delete type=0 #28
+2025/09/28-14:13:13.599 3d65eb Level-0 table #33: started
+2025/09/28-14:13:13.605 3d65eb Level-0 table #33: 19117 bytes OK
+2025/09/28-14:13:13.609 3d65eb Delete type=0 #30
+2025/09/28-14:18:13.646 3d65eb Level-0 table #35: started
+2025/09/28-14:18:13.650 3d65eb Level-0 table #35: 19512 bytes OK
+2025/09/28-14:18:13.654 3d65eb Delete type=0 #32
+2025/09/28-14:18:13.656 3d65eb Compacting 4@0 + 1@1 files
+2025/09/28-14:18:13.665 3d65eb Generated table #36@0: 124 keys, 108513 bytes
+2025/09/28-14:18:13.665 3d65eb Compacted 4@0 + 1@1 files => 108513 bytes
+2025/09/28-14:18:13.666 3d65eb compacted to: files[ 0 1 1 0 0 0 0 ]
+2025/09/28-14:18:13.667 3d65eb Delete type=2 #29
+2025/09/28-14:18:13.667 3d65eb Delete type=2 #35
+2025/09/28-14:18:13.667 3d65eb Delete type=2 #33
+2025/09/28-14:18:13.667 3d65eb Delete type=2 #27
+2025/09/28-14:18:13.667 3d65eb Delete type=2 #31
+2025/09/28-15:11:29.088 3d65eb Level-0 table #38: started
+2025/09/28-15:11:29.095 3d65eb Level-0 table #38: 23083 bytes OK
+2025/09/28-15:11:29.100 3d65eb Delete type=0 #34
+2025/09/28-15:13:30.061 3d65eb Level-0 table #40: started
+2025/09/28-15:13:30.065 3d65eb Level-0 table #40: 16355 bytes OK
+2025/09/28-15:13:30.069 3d65eb Delete type=0 #37
+2025/09/28-15:17:45.497 3d65eb Level-0 table #42: started
+2025/09/28-15:17:45.501 3d65eb Level-0 table #42: 22743 bytes OK
+2025/09/28-15:17:45.508 3d65eb Delete type=0 #39
