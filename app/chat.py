@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import random
 import pyperclip
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -224,52 +225,49 @@ def ask_gpt_and_get_reply(driver: webdriver.Chrome, chat_handle: str, prompt: st
         editor.send_keys(Keys.CONTROL, 'a'); editor.send_keys(Keys.DELETE)
     except Exception:
         pass
-    pyperclip.copy(prompt)
-    pasted = False
-    # Prefer element-targeted paste on Windows; fall back to other methods
-    try:
-        editor.send_keys(Keys.CONTROL, 'v'); pasted = True
-    except Exception:
+    # Human-like chunked typing (no clipboard/JS injection) and no Enter until complete
+    def _split_into_chunks(text: str, min_len: int = 120, max_len: int = 420) -> list[str]:
+        chunks: list[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            target = random.randint(min_len, max_len)
+            j = min(i + target, n)
+            if j < n:
+                k = text.rfind(' ', i + int(target * 0.6), j)
+                if k != -1 and k > i:
+                    j = k
+            chunks.append(text[i:j])
+            i = j
+        return [c for c in chunks if c]
+
+    def _type_text_respecting_newlines(el, text: str) -> None:
+        buf = []
+        for ch in text:
+            if ch == '\n':
+                if buf:
+                    el.send_keys(''.join(buf))
+                    buf = []
+                # Shift+Enter inserts newline without sending
+                ActionChains(driver).key_down(Keys.SHIFT).send_keys(Keys.ENTER).key_up(Keys.SHIFT).perform()
+                time.sleep(0.03 + random.uniform(0.02, 0.06))
+            else:
+                buf.append(ch)
+                if len(buf) >= random.randint(30, 120):
+                    el.send_keys(''.join(buf))
+                    buf = []
+                    time.sleep(0.02 + random.uniform(0.01, 0.05))
+        if buf:
+            el.send_keys(''.join(buf))
+
+    chunks = _split_into_chunks(prompt)
+    for c in chunks:
         try:
-            ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform(); pasted = True
-        except Exception:
-            try:
-                ActionChains(driver).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform(); pasted = True
-            except Exception:
-                try:
-                    editor.send_keys(prompt); pasted = True
-                except Exception:
-                    pasted = False
-    # Give DOM time to reflect paste
-    time.sleep(0.15)
-    # If composer didn't receive most of the text, inject via JS as a robust fallback
-    try:
-        current = (editor.text or "").strip()
-    except Exception:
-        current = ""
-    if len(current) < max(10, int(len(prompt) * 0.6)):
-        try:
-            driver.execute_script(
-                """
-                (function(el, txt){
-                  try{
-                    el.focus();
-                    const isTextarea = el.tagName && el.tagName.toLowerCase() === 'textarea';
-                    if (isTextarea) {
-                      el.value = txt;
-                    } else {
-                      el.textContent = txt;
-                    }
-                    const evt = new InputEvent('input', {bubbles: true, cancelable: true});
-                    el.dispatchEvent(evt);
-                  }catch(e){}
-                })(arguments[0], arguments[1]);
-                """,
-                editor, prompt,
-            )
-            time.sleep(0.05)
+            driver.execute_script("arguments[0].focus();", editor)
         except Exception:
             pass
+        _type_text_respecting_newlines(editor, c)
+        time.sleep(0.10 + random.uniform(0.05, 0.22))
     try:
         editor.send_keys(Keys.ENTER)
         time.sleep(0.15)

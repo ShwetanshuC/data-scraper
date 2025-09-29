@@ -229,7 +229,7 @@ class _RateLimiter:
     def need_cooldown(self) -> bool:
         return self.batch_completed >= max(1, self.batch_limit)
 
-    def begin_cooldown(self, seconds: int | float) -> None:
+    def begin_cooldown(self, seconds) -> None:
         self.cooldown_until = time.time() + float(seconds)
 
     def cooldown_remaining(self) -> int:
@@ -388,7 +388,7 @@ DEBUG_SHEET_GID = "344000088"  # Specific sheet tab ID to test
 DEBUG_SKIP_API_CALLS = False  # no effect in UI-driven mode
 
 # Processing configuration
-MIN_BUCKET_SIZE = 5  # Minimum number of websites per bucket
+MIN_BUCKET_SIZE = 8  # Minimum number of websites per bucket
 TEMP_FOLDER_NAME = "scraping_extraction_from_sheet"
 
 # Rate limiting configuration - tuned to avoid Google Sheets 429s
@@ -2005,91 +2005,22 @@ def process_all_sheets(spreadsheet_id, target_headers, temp_folder, sheets_folde
                 print(f"⏭️  Skipping Error Log sheet (ID: {sheet_id})")
                 continue
             
-            # Extract websites from this sheet
-            print(f"  🔍 Extracting websites from sheet '{worksheet.title}'...")
-            websites, error = extract_websites_from_sheet_by_name(spreadsheet_id, worksheet, target_headers)
-            if error:
-                print(f"  ❌ Error extracting websites: {error}")
-                print(f"  ⏭️  Skipping sheet '{worksheet.title}' (ID: {sheet_id}) and continuing to next sheet...")
-                continue
-            
-            # DEBUG: Show the actual websites being extracted
-            print(f"  🔍 DEBUG: Extracted {len(websites)} websites from sheet '{worksheet.title}':")
-            for j, website in enumerate(websites[:5]):  # Show first 5
-                print(f"    {j+1}. {website}")
-            if len(websites) > 5:
-                print(f"    ... and {len(websites) - 5} more")
-            print()
-            
-            if not websites:
-                print(f"  ⚠️  No websites found in sheet '{worksheet.title}' (ID: {sheet_id})")
-                print(f"  ⏭️  Skipping sheet '{worksheet.title}' and continuing to next sheet...")
-                continue
-            
-            # Save sheet data using sheet ID as key
-            print(f"  💾 Saving sheet data for '{worksheet.title}'...")
-            sheet_file = save_sheet_data(websites, target_headers, sheet_id, sheets_folder)
-            if not sheet_file:
-                print(f"  ❌ Failed to save sheet data for sheet '{worksheet.title}' (ID: {sheet_id})")
-                print(f"  ⏭️  Skipping sheet '{worksheet.title}' and continuing to next sheet...")
-                continue
-            
-            # Create buckets for this sheet
-            buckets = create_buckets_for_sheet(websites, sheet_id, buckets_folder)
-            
-            # Add headers to each bucket for dynamic format detection
-            # Use actual sheet headers instead of target_headers for dynamic format detection
-            ws_values, err = rate_limited_sheets_api_call(worksheet.get_all_values)
-            actual_headers = [header.strip() for header in (ws_values[0] if (ws_values and len(ws_values) > 0) else [])] if not err and ws_values else target_headers
-            for bucket in buckets:
-                bucket['headers'] = actual_headers
-            
-            # DEBUG: Verify bucket websites match extracted websites
-            if buckets:
-                print(f"  🔍 DEBUG: Verifying bucket websites match extracted websites...")
-                bucket_websites = []
-                for bucket in buckets:
-                    bucket_websites.extend(bucket['websites'])
-                
-                print(f"    Extracted websites: {len(websites)}")
-                print(f"    Bucket websites: {len(bucket_websites)}")
-                
-                # Check if they match
-                if set(websites) == set(bucket_websites):
-                    print(f"    ✅ Bucket websites match extracted websites")
-                else:
-                    print(f"    ⚠️  Mismatch detected!")
-                    print(f"    Missing from buckets: {set(websites) - set(bucket_websites)}")
-                    print(f"    Extra in buckets: {set(bucket_websites) - set(websites)}")
-                print()
-            
-            # Store data using sheet ID as key
+            # Defer extraction and file writing; register sheet for later processing
+            sheet_file = None
+            actual_headers = None
+
+            # Store data using sheet ID as key (extraction and buckets deferred to processing time)
             all_sheets_data[sheet_id] = {
-                'websites': websites,
-                'buckets': buckets,
+                'websites': None,
+                'buckets': [],
                 'sheet_file': sheet_file,
                 'sheet_id': sheet_id,
-                'headers': actual_headers  # Use actual sheet headers for dynamic format detection
+                'headers': actual_headers  # Will be populated at processing time
             }
             
-            if buckets:
-                print(f"  ✅ Sheet {sheet_id} prepared: {len(websites)} websites, {len(buckets)} buckets")
-            else:
-                print(f"  ⚠️  Sheet {sheet_id} prepared: {len(websites)} websites (insufficient for buckets)")
-            
-            print(f"  📁 Sheet data saved to: {sheet_file}")
-            print(f"  🪣 Buckets created in: {buckets_folder}")
+            print(f"  ✅ Sheet {sheet_id} registered for processing (extraction deferred)")
         
-        # Create combined buckets from small sheets
-        combined_buckets = create_combined_buckets_from_small_sheets(all_sheets_data, buckets_folder)
-        if combined_buckets:
-            # Add combined buckets to a special entry
-            all_sheets_data['COMBINED_SMALL_SHEETS'] = {
-                'websites': [item['website'] for bucket in combined_buckets for item in bucket['sheet_data']],
-                'buckets': combined_buckets,
-                'sheet_file': None,
-                'sheet_id': 'COMBINED_SMALL_SHEETS'
-            }
+        # Combined buckets generation skipped; buckets will be created JIT per sheet
         
         if not all_sheets_data:
             print(f"\n❌ No valid sheets found to process")
@@ -2097,7 +2028,7 @@ def process_all_sheets(spreadsheet_id, target_headers, temp_folder, sheets_folde
         
         print(f"\n📊 SUMMARY: Prepared {len(all_sheets_data)} sheets for processing")
         for sheet_id, data in all_sheets_data.items():
-            print(f"  - Sheet {sheet_id}: {len(data['websites'])} websites, {len(data['buckets'])} buckets")
+            print(f"  - Sheet {sheet_id}: websites deferred (buckets deferred)")
         
         print(f"\n🔍 SHEET PROCESSING SUMMARY:")
         print(f"  - Total sheets found: {len(worksheets)}")
@@ -4192,10 +4123,51 @@ def process_specific_sheet(sheet_id, all_sheets_data, buckets_folder, results_fo
             return False, f"Sheet {sheet_id} not found"
         
         sheet_data = all_sheets_data[sheet_id]
-        buckets = sheet_data['buckets']
+        
+        # Extract websites and headers just-in-time for this sheet
+        print(f"  🔍 Extracting websites just-in-time for sheet '{sheet_id}'...")
+        try:
+            gs_client = authenticate_google_sheets()
+            if not gs_client:
+                return False, "Failed to authenticate with Google Sheets"
+            spreadsheet, error = rate_limited_sheets_api_call(gs_client.open_by_key, spreadsheet_id)
+            if error:
+                return False, f"Failed to open spreadsheet: {error}"
+            # Locate worksheet by ID
+            worksheet = None
+            ws_list, err = rate_limited_sheets_api_call(spreadsheet.worksheets)
+            if err:
+                return False, f"Failed to list worksheets: {err}"
+            for ws in ws_list:
+                if str(ws.id) == str(sheet_id):
+                    worksheet = ws
+                    break
+            if not worksheet:
+                return False, f"Worksheet with ID {sheet_id} not found"
+            # Extract now
+            websites, error = extract_websites_from_sheet_by_name(spreadsheet_id, worksheet, headers)
+            if error:
+                return False, f"Error extracting websites: {error}"
+            if not websites:
+                return False, f"No websites found for sheet {sheet_id}"
+            # Capture headers for dynamic format detection
+            ws_values, err = rate_limited_sheets_api_call(worksheet.get_all_values)
+            actual_headers = [h.strip() for h in (ws_values[0] if (ws_values and len(ws_values) > 0) else [])] if not err and ws_values else headers
+            sheet_data['websites'] = websites
+            sheet_data['headers'] = actual_headers
+        except Exception as e:
+            return False, f"JIT extraction failed: {str(e)}"
+
+        # Create buckets just-in-time for this sheet
+        print(f"🪣 Creating buckets just-in-time for sheet {sheet_id}...")
+        buckets = create_buckets_for_sheet(sheet_data['websites'], sheet_id, buckets_folder)
+        
+        # Attach headers to buckets for dynamic format detection
+        for bucket in buckets:
+            bucket['headers'] = sheet_data.get('headers', headers)
         
         if not buckets:
-            print(f"⏭️  No buckets for sheet {sheet_id}, cannot proceed...")
+            print(f"⏭️  No buckets created for sheet {sheet_id}, cannot proceed...")
             return False, f"No buckets for sheet {sheet_id}"
         
         print(f"🪣 Processing {len(buckets)} buckets for sheet {sheet_id}...")
@@ -4409,10 +4381,8 @@ def process_pipeline_all_sheets(pipeline_name, spreadsheet_id, headers, selected
             return False, "No sheets with websites found"
         
         print(f"\n📊 Successfully prepared {len(all_sheets_data)} sheets for pipeline processing")
-        total_websites = sum(len(data['websites']) for data in all_sheets_data.values())
-        total_buckets = sum(len(data['buckets']) for data in all_sheets_data.values())
-        print(f"📈 Total websites: {total_websites}")
-        print(f"🪣 Total buckets: {total_buckets}")
+        print(f"📈 Website extraction will occur just-in-time per sheet")
+        print(f"🪣 Bucket creation is deferred to per-sheet processing time")
         
         # Dropbox integration removed
         
@@ -4663,10 +4633,8 @@ def main(selected_worksheet_ids=None, pipeline_name=None):
         return
     
     print(f"\n📊 Successfully prepared {len(all_sheets_data)} sheets for sequential processing")
-    total_websites = sum(len(data['websites']) for data in all_sheets_data.values())
-    total_buckets = sum(len(data['buckets']) for data in all_sheets_data.values())
-    print(f"📈 Total websites: {total_websites}")
-    print(f"🪣 Total buckets: {total_buckets}")
+    print(f"📈 Website extraction will occur just-in-time per sheet")
+    print(f"🪣 Bucket creation is deferred to per-sheet processing time")
     
     # Handle debug mode vs API research
     if DEBUG_MODE and DEBUG_SKIP_API_CALLS:

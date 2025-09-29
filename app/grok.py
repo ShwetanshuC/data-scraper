@@ -37,6 +37,7 @@ def find_grok_handle(driver: webdriver.Chrome) -> str | None:
 
 
 COMPOSER_SELECTORS = [
+    "textarea[aria-label*='Ask Grok' i]",
     "textarea[data-testid='prompt-textarea']",
     "div[contenteditable='true'][data-testid='prompt-textarea']",
     "div[contenteditable='true'][role='textbox']",
@@ -220,11 +221,25 @@ def ask_grok_and_get_reply(driver: webdriver.Chrome, grok_handle: str, prompt: s
                     pasted = False
     time.sleep(0.15)
     # Ensure most of the prompt is present; if not, inject via JS and dispatch input event
-    try:
-        current = (editor.text or "").strip()
-    except Exception:
-        current = ""
-    if len(current) < max(10, int(len(prompt) * 0.6)):
+    def _read_editor_value() -> str:
+        try:
+            tag = (editor.tag_name or "").lower()
+        except Exception:
+            tag = ""
+        if tag == "textarea":
+            try:
+                v = editor.get_attribute("value") or ""
+                return v.strip()
+            except Exception:
+                pass
+        try:
+            return (editor.text or "").strip()
+        except Exception:
+            return ""
+
+    current = _read_editor_value()
+    threshold = max(10, int(len(prompt) * 0.6))
+    if len(current) < threshold:
         try:
             driver.execute_script(
                 """
@@ -245,9 +260,14 @@ def ask_grok_and_get_reply(driver: webdriver.Chrome, grok_handle: str, prompt: s
                 editor, prompt,
             )
             time.sleep(0.05)
+            # Re-read after JS injection and consider it a successful paste if threshold met
+            current = _read_editor_value()
+            if len(current) >= threshold:
+                pasted = True
         except Exception:
             pass
-    if not pasted:
+    # If neither paste nor JS injection managed to populate sufficiently, abort
+    if not pasted and len(current) < threshold:
         return ""
     # Try multiple send strategies like ChatGPT flow
     try:
