@@ -37,8 +37,9 @@ import concurrent.futures
 from pathlib import Path
 from google.oauth2.service_account import Credentials
  # OpenAI removed in UI-driven variant
-from t import attach as _attach_chrome, goto_chatgpt_tab as _goto_chatgpt
+from t import attach as _attach_chrome, goto_chatgpt_tab as _goto_chatgpt, goto_grok_tab as _goto_grok
 from app.chat import find_chat_handle as _find_chat_handle, open_fresh_chat as _open_fresh_chat, ask_gpt_and_get_reply as _ask_gpt
+from app.grok import find_grok_handle as _find_grok_handle, open_fresh_grok_chat as _open_fresh_grok, ask_grok_and_get_reply as _ask_grok
 from selenium.webdriver.common.by import By  # type: ignore
 import webbrowser
 
@@ -90,6 +91,10 @@ def print_key_status():
 # ===== ChatGPT Web automation driver setup =====
 _CHAT_DRIVER = None
 _CHAT_HANDLE = None
+_GROK_HANDLE = None
+_ACTIVE_PROVIDER = 'chatgpt'  # 'chatgpt' or 'grok'
+_PROVIDER_LOCK_UNTIL: float = 0.0
+_LAST_SUCCESS = {'chatgpt': 0.0, 'grok': 0.0}
 
 def _ensure_chat_ready(model_url: str = "https://chatgpt.com/?model=gpt-5") -> bool:
     """Attach to existing Chrome (9222), ensure a fresh ChatGPT composer is ready."""
@@ -116,6 +121,38 @@ def _ensure_chat_ready(model_url: str = "https://chatgpt.com/?model=gpt-5") -> b
         return True
     except Exception as e:
         print(f"❌ Could not prepare ChatGPT Web session: {e}")
+        return False
+
+def _ensure_grok_ready(model_url: str = "https://grok.com/") -> bool:
+    """Attach to existing Chrome (9222), ensure a fresh Grok composer is ready."""
+    global _CHAT_DRIVER, _GROK_HANDLE
+    try:
+        if _CHAT_DRIVER is None:
+            _CHAT_DRIVER = _attach_chrome()
+        # Find or open Grok tab
+        if _GROK_HANDLE is None or _GROK_HANDLE not in _CHAT_DRIVER.window_handles:
+            try:
+                _goto_grok(_CHAT_DRIVER)
+            except Exception:
+                pass
+            _GROK_HANDLE = _find_grok_handle(_CHAT_DRIVER)
+            if _GROK_HANDLE is None:
+                try:
+                    _CHAT_DRIVER.switch_to.new_window('tab')
+                except Exception:
+                    pass
+                try:
+                    _CHAT_DRIVER.get(model_url)
+                    _GROK_HANDLE = _CHAT_DRIVER.current_window_handle
+                except Exception:
+                    _GROK_HANDLE = _CHAT_DRIVER.current_window_handle
+        try:
+            _open_fresh_grok(_CHAT_DRIVER, _GROK_HANDLE, model_url=model_url)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        print(f"❌ Could not prepare Grok session: {e}")
         return False
 
 def _chatgpt_ask(prompt: str, timeout: float = 60.0) -> str:
@@ -145,6 +182,141 @@ def _chatgpt_ask(prompt: str, timeout: float = 60.0) -> str:
     except Exception as e:
         print(f"❌ ChatGPT Web error: {e}")
         return ""
+
+def _grok_ask(prompt: str, timeout: float = 60.0) -> str:
+    """Send a prompt to Grok Web and return the reply text."""
+    if not _ensure_grok_ready():
+        return ""
+    try:
+        reply = _ask_grok(_CHAT_DRIVER, _GROK_HANDLE, prompt, response_timeout=timeout)
+        return (reply or "").strip()
+    except Exception as e:
+        print(f"❌ Grok Web error: {e}")
+        return ""
+
+def _choose_provider(now_ts: float) -> str:
+    global _ACTIVE_PROVIDER, _PROVIDER_LOCK_UNTIL
+    if _PROVIDER_LOCK_UNTIL and now_ts < _PROVIDER_LOCK_UNTIL:
+        return _ACTIVE_PROVIDER
+    # If ChatGPT has had no successful response for 20 minutes, switch to Grok for ~1 hour
+    last_gpt = _LAST_SUCCESS.get('chatgpt', 0.0) or 0.0
+    if last_gpt and (now_ts - last_gpt) >= 1200.0:
+        _ACTIVE_PROVIDER = 'grok'
+        _PROVIDER_LOCK_UNTIL = now_ts + 3600.0
+        print("🔁 Switching provider: ChatGPT inactive for 20 min → using Grok for ~1 hour")
+        return 'grok'
+    # Default
+    _ACTIVE_PROVIDER = 'chatgpt'
+    _PROVIDER_LOCK_UNTIL = 0.0
+    return 'chatgpt'
+
+# ===== Simple rate limiter (mirrors server.JobControl semantics) =====
+class _RateLimiter:
+    def __init__(self, batch_limit: int = 80, cooldown_seconds: int = 60):
+        self.batch_limit = int(batch_limit)
+        self.cooldown_seconds = int(cooldown_seconds)
+        self.batch_completed = 0
+        self.cooldown_until: float = 0.0
+
+    def mark_attempt(self) -> None:
+        self.batch_completed += 1
+
+    def reset_batch_if_needed(self) -> None:
+        if self.cooldown_until and time.time() >= self.cooldown_until:
+            self.cooldown_until = 0.0
+            self.batch_completed = 0
+
+    def need_cooldown(self) -> bool:
+        return self.batch_completed >= max(1, self.batch_limit)
+
+    def begin_cooldown(self, seconds: int | float) -> None:
+        self.cooldown_until = time.time() + float(seconds)
+
+    def cooldown_remaining(self) -> int:
+        if self.cooldown_until <= 0:
+            return 0
+        rem = int(self.cooldown_until - time.time())
+        return rem if rem > 0 else 0
+
+
+# Env-configurable knobs (fallbacks provided)
+CHAT_RATE_BATCH_LIMIT = int(os.environ.get("CHAT_RATE_BATCH_LIMIT", os.environ.get("SCRAPER_CHAT_RATE_BATCH_LIMIT", "80")))
+CHAT_RATE_COOLDOWN_SECONDS = int(os.environ.get("CHAT_RATE_COOLDOWN_SECONDS", os.environ.get("SCRAPER_CHAT_RATE_COOLDOWN_SECONDS", "60")))
+_RATE_LIMITER = _RateLimiter(batch_limit=CHAT_RATE_BATCH_LIMIT, cooldown_seconds=CHAT_RATE_COOLDOWN_SECONDS)
+
+
+def _rate_limited_chatgpt_ask(prompt: str, timeout: float = 60.0) -> str:
+    """Provider-aware ask with simple rate limiting and failover policy.
+
+    Policy:
+    - Default to ChatGPT.
+    - If no ChatGPT success for ≥20 minutes, switch to Grok and lock for ~1 hour.
+    - While locked to Grok, use Grok. If Grok has no success for ≥20 minutes, switch back to ChatGPT.
+    """
+    try:
+        global _ACTIVE_PROVIDER, _PROVIDER_LOCK_UNTIL
+        _RATE_LIMITER.reset_batch_if_needed()
+        if _RATE_LIMITER.need_cooldown():
+            if _RATE_LIMITER.cooldown_remaining() == 0:
+                _RATE_LIMITER.begin_cooldown(_RATE_LIMITER.cooldown_seconds)
+            rem = _RATE_LIMITER.cooldown_remaining()
+            if rem > 0:
+                print(f"⏳ Cooling down chat automation for {rem}s (batch {_RATE_LIMITER.batch_completed}/{_RATE_LIMITER.batch_limit})")
+                time.sleep(rem)
+            _RATE_LIMITER.cooldown_until = 0.0
+            _RATE_LIMITER.batch_completed = 0
+
+        now_ts = time.time()
+        provider = _choose_provider(now_ts)
+
+        # Wait up to 20 minutes for a response before declaring no-response
+        ask_timeout = max(float(timeout or 0), 1200.0)
+
+        def _do_ask(p: str) -> str:
+            if provider == 'grok':
+                return _grok_ask(p, timeout=ask_timeout)
+            return _chatgpt_ask(p, timeout=ask_timeout)
+
+        reply = _do_ask(prompt) or ''
+        if reply.strip():
+            _LAST_SUCCESS[provider] = time.time()
+            _RATE_LIMITER.mark_attempt()
+            return reply
+
+        # Handle failure according to policy thresholds
+        now2 = time.time()
+        if provider == 'chatgpt':
+            last = _LAST_SUCCESS.get('chatgpt', 0.0) or 0.0
+            if last == 0.0 or (now2 - last) >= 1200.0:
+                # Switch to Grok for ~1 hour and try once immediately
+                print("⚠️ ChatGPT produced no reply. Falling back to Grok and locking for ~1 hour.")
+                _LAST_SUCCESS.setdefault('grok', 0.0)
+                _ACTIVE_PROVIDER = 'grok'
+                _PROVIDER_LOCK_UNTIL = now2 + 3600.0
+                g_reply = _grok_ask(prompt, timeout=ask_timeout) or ''
+                if g_reply.strip():
+                    _LAST_SUCCESS['grok'] = time.time()
+                    _RATE_LIMITER.mark_attempt()
+                    return g_reply
+        else:  # provider == 'grok'
+            last = _LAST_SUCCESS.get('grok', 0.0) or 0.0
+            if last == 0.0 or (now2 - last) >= 1200.0:
+                # Switch back to ChatGPT and clear lock; try once
+                print("⚠️ Grok produced no reply for ≥20m window. Switching back to ChatGPT.")
+                _ACTIVE_PROVIDER = 'chatgpt'
+                _PROVIDER_LOCK_UNTIL = 0.0
+                c_reply = _chatgpt_ask(prompt, timeout=ask_timeout) or ''
+                if c_reply.strip():
+                    _LAST_SUCCESS['chatgpt'] = time.time()
+                    _RATE_LIMITER.mark_attempt()
+                    return c_reply
+
+        _RATE_LIMITER.mark_attempt()
+        return reply
+    except Exception as e:
+        print(f"❌ Provider-aware ask error: {e}")
+        # Final fallback: ChatGPT direct
+        return _chatgpt_ask(prompt, timeout=timeout)
 
 # Model configuration - easily change between GPT models
 OPENAI_MODEL = 'gpt-5-mini'  # unused in UI-driven mode
@@ -638,7 +810,7 @@ def research_websites(websites, batch_size):
             prompt = create_research_prompt(batch_websites, INDUSTRY)
             
             # Ask via ChatGPT Web (browser automation)
-            output_text = _chatgpt_ask(prompt, timeout=150.0)
+            output_text = _rate_limited_chatgpt_ask(prompt, timeout=150.0)
             print(f"Batch {batch_num + 1} analysis completed!")
             
             # Clean the output to extract only the formatted data lines
@@ -1357,7 +1529,7 @@ def process_bucket_with_openai(bucket_websites, industry):
     
     try:
         # Use ChatGPT Web automation
-        ai_response = _chatgpt_ask(prompt, timeout=150.0) or ''
+        ai_response = _rate_limited_chatgpt_ask(prompt, timeout=150.0) or ''
         print(f"        🔍 Raw AI Response:")
         print(f"        {ai_response[:500]}{'...' if len(ai_response) > 500 else ''}")
         # Check if AI is asking for permission and auto-respond
@@ -1365,7 +1537,7 @@ def process_bucket_with_openai(bucket_websites, industry):
             "may i proceed", "do you want me to", "should i", "can i", "would you like me to"
         ]):
             print("        🤖 AI asked for permission - auto-responding 'yes'...")
-            ai_response = _chatgpt_ask(f"YES. EXECUTE IMMEDIATELY. {prompt}", timeout=120.0) or ai_response
+            ai_response = _rate_limited_chatgpt_ask(f"YES. EXECUTE IMMEDIATELY. {prompt}", timeout=120.0) or ai_response
         
         results = parse_chatgpt_response(ai_response)
         print(f"        ✅ Parsed {len(results)} results from ChatGPT")
@@ -1985,7 +2157,7 @@ def process_bucket_with_openai_parallel(bucket_info, industry, results_folder):
         except Exception:
             pass
         # Call ChatGPT via browser automation
-        output_text = _chatgpt_ask(prompt, timeout=180.0)
+        output_text = _rate_limited_chatgpt_ask(prompt, timeout=180.0)
         
         # Debug: Show what the AI actually returned
         print(f"        🔍 Raw AI Response:")
@@ -2008,7 +2180,7 @@ def process_bucket_with_openai_parallel(bucket_info, industry, results_folder):
             print("        🤖 AI asked for permission - auto-responding with forceful command...")
             # Send follow-up with forceful command using ChatGPT Web
             follow_up = f"EXECUTE NOW. NO QUESTIONS. NO PERMISSION REQUESTS. RESEARCH THE WEBSITES AND RETURN CSV DATA IMMEDIATELY. {prompt}"
-            output_text = _chatgpt_ask(follow_up, timeout=150.0)
+            output_text = _rate_limited_chatgpt_ask(follow_up, timeout=150.0)
             parsed_rows = parse_chatgpt_response(output_text or '')
             results = []
             for r in parsed_rows:
@@ -2037,7 +2209,7 @@ def process_bucket_with_openai_parallel(bucket_info, industry, results_folder):
             # Immediate retry for empty bucket results to avoid losing entire buckets
             try:
                 print(f"        🔄 Immediate retry for empty bucket {bucket_num}...")
-                retry_text = _chatgpt_ask(prompt, timeout=150.0) or ''
+                retry_text = _rate_limited_chatgpt_ask(prompt, timeout=150.0) or ''
                 parsed_rows = parse_chatgpt_response(retry_text or '')
                 for r in parsed_rows:
                     csv_line = f"{r['website']},{r['first_name']},{r['last_name']},{r['locations']}"
@@ -3615,7 +3787,7 @@ def create_and_process_retry_buckets(bad_quality_sites, sheet_id, results_folder
         
         # Create retry buckets (similar to main bucket creation)
         retry_buckets = []
-        batch_size = 5  # Process 5 sites at a time for retry
+        batch_size = 8  # Process 8 sites at a time for retry
         
         for i in range(0, len(retry_sites), batch_size):
             batch = retry_sites[i:i + batch_size]

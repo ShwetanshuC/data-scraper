@@ -59,6 +59,17 @@ def goto_chatgpt_tab(d):
     # If no ChatGPT tab found, open a new one.
     d.get("https://chatgpt.com/")
 
+def goto_grok_tab(d):
+    """
+    Switch to an existing browser tab that has Grok loaded, or open Grok if none found.
+    """
+    for h in d.window_handles:
+        d.switch_to.window(h)
+        url = (d.current_url or "")
+        if "grok.com" in url or "x.ai" in url or "xai.com" in url:
+            return
+    d.get("https://grok.com/")
+
 def find_editor(d, timeout=5):
     """
     Attempt to locate the ProseMirror editor element on the current page or within iframes.
