@@ -1,0 +1,9 @@
+sa-key.json
+*.json
+*.p12
+*.pem
+.env
+.env.*
+.credentials
+**/service-account-*.json
+**/*service*account*key*.json
